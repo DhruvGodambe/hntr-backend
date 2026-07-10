@@ -1,0 +1,6 @@
+- [ ] Initialize project (npm init, install dependencies)
+- [ ] Set up project structure (models, routes, services, controllers)
+- [ ] Create Mongoose models (`User`, `Transaction`)
+- [ ] Build Services (`network.service`, `blockchain.service`, `rewards.service`, `feature-gating.service`)
+- [ ] Create API Routes (`auth`, `users`, `network`, `admin`)
+- [ ] Setup Server entry point (Express app)
