@@ -9,7 +9,7 @@ export interface IUser extends Document {
   ancestors: string[];
   directDownline: string[];
   tier: 'None' | 'Scout' | 'Tracker' | 'Ranger' | 'Hunter' | 'Apex';
-  rank: 'None' | 'Tracker' | 'Ranger' | 'Hunter' | 'Apex' | 'Elite' | 'Master' | 'Legend';
+  rank: 'None' | 'Scout' | 'Tracker' | 'Ranger' | 'Hunter' | 'Elite Hunter' | 'Master Hunter' | 'Legend Hunter';
   teamVolume: number;
   legVolumes: Map<string, number>;
   joinedAt: Date;
@@ -54,7 +54,7 @@ const UserSchema: Schema = new Schema({
   },
   rank: {
     type: String,
-    enum: ['None', 'Tracker', 'Ranger', 'Hunter', 'Apex', 'Elite', 'Master', 'Legend'],
+    enum: ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Elite Hunter', 'Master Hunter', 'Legend Hunter'],
     default: 'None',
   },
   teamVolume: {

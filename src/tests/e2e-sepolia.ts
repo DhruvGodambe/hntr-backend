@@ -24,7 +24,11 @@ async function runFullCommissionFlow() {
   const mockUSDTAddress = "0xEC4ca582619E79FdedC4bc23948d7d7856b6750e";
 
   const TREASURY = "0x284E6b41dB482d9edE9449Bbda1198d95464B23D";
-  const LEADERSHIP = "0x19dCe4e322D849c0b10F6259b2fB4D2a7DE874fB";
+  
+  // Dynamically generate a Leadership Wallet so we can test the cron job payouts
+  const leadershipWallet = ethers.Wallet.createRandom().connect(provider);
+  const LEADERSHIP = leadershipWallet.address;
+  
   const ACHIEVEMENT = "0x3D6D1BffaDd3a71baDdC3E6468ed144f0F4B975b";
 
   if (!privateKey) {
@@ -48,8 +52,8 @@ async function runFullCommissionFlow() {
   await User.deleteMany({});
   await Transaction.deleteMany({});
   
-  const ownerUser = await User.create({ username: 'Genesis', walletAddress: ownerWallet.address.toLowerCase(), tier: 'None', rank: 'None', ancestors: [], legVolumes: new Map() });
-  const uplineUser = await User.create({ username: 'Upline', walletAddress: uplineWallet.address.toLowerCase(), tier: 'None', rank: 'None', ancestors: ['Genesis'], legVolumes: new Map() });
+  const ownerUser = await User.create({ username: 'Genesis', walletAddress: ownerWallet.address.toLowerCase(), tier: 'Apex', rank: 'Legend Hunter', ancestors: [], legVolumes: new Map() });
+  const uplineUser = await User.create({ username: 'Upline', walletAddress: uplineWallet.address.toLowerCase(), tier: 'Hunter', rank: 'Elite Hunter', ancestors: ['Genesis'], legVolumes: new Map() });
   const buyerUser = await User.create({ username: 'Buyer', walletAddress: buyerWallet.address.toLowerCase(), tier: 'None', rank: 'None', ancestors: ['Genesis', 'Upline'], legVolumes: new Map() });
   
   console.log(`✅ MongoDB Cleared and Users Created!`);
@@ -65,7 +69,8 @@ async function runFullCommissionFlow() {
   console.log(`\n⏳ Funding test wallets with Sepolia ETH for gas...`);
   const fundTx1 = await ownerWallet.sendTransaction({ to: uplineWallet.address, value: ethers.parseEther("0.005") });
   const fundTx2 = await ownerWallet.sendTransaction({ to: buyerWallet.address, value: ethers.parseEther("0.005") });
-  await Promise.all([fundTx1.wait(), fundTx2.wait()]);
+  const fundTx3 = await ownerWallet.sendTransaction({ to: leadershipWallet.address, value: ethers.parseEther("0.005") }); // Needed for cron payouts
+  await Promise.all([fundTx1.wait(), fundTx2.wait(), fundTx3.wait()]);
   console.log(`✅ Test wallets funded with ETH!`);
 
   // 2. Configure Protocol Wallets
@@ -194,6 +199,50 @@ async function runFullCommissionFlow() {
     console.log("🎉 SUCCESS: The backend perfectly synchronized with the smart contract events!");
   } else {
     console.log("⚠️ WARNING: The backend database did not update. The BlockchainService might have missed the event or failed.");
+  }
+  
+  // 8. Test Automated Cron Job (Leadership Payouts)
+  console.log("\n--- TESTING MONTHLY LEADERSHIP CRON JOB ---");
+  
+  // Wait a few seconds for the network to settle
+  await new Promise(resolve => setTimeout(resolve, 3000));
+
+  // The smart contract should have sent 5% of the $250 purchase ($12.5 USDC) to the Leadership Wallet
+  const leadershipUSDCBalance = await usdtContract.balanceOf(LEADERSHIP);
+  console.log(`Leadership Wallet USDC Balance: $${ethers.formatUnits(leadershipUSDCBalance, 6)}`);
+
+  // We set the environment variable to our mock leadership wallet's private key
+  process.env.LEADERSHIP_PRIVATE_KEY = leadershipWallet.privateKey;
+  
+  // Import the RewardsService dynamically to ensure env vars are picked up if needed, though statically imported is fine
+  const { RewardsService } = await import('../services/rewards.service');
+  const Payout = (await import('../models/Payout')).default;
+  
+  // Clear any old payouts
+  await Payout.deleteMany({});
+  
+  const initOwnerUsdc = await usdtContract.balanceOf(ownerWallet.address);
+  const initUplineUsdc = await usdtContract.balanceOf(uplineWallet.address);
+
+  console.log(`⏳ Triggering Monthly Leadership Cron...`);
+  await RewardsService.calculateMonthlyLeadershipPool();
+
+  const finalOwnerUsdc = await usdtContract.balanceOf(ownerWallet.address);
+  const finalUplineUsdc = await usdtContract.balanceOf(uplineWallet.address);
+  const finalLeadershipUsdc = await usdtContract.balanceOf(LEADERSHIP);
+
+  console.log(`✅ Cron Job Finished! Checking results...`);
+  console.log(`Leadership Wallet Final Balance: $${ethers.formatUnits(finalLeadershipUsdc, 6)}`);
+  console.log(`Owner received payout: +$${ethers.formatUnits(finalOwnerUsdc - initOwnerUsdc, 6)} USDC`);
+  console.log(`Upline received payout: +$${ethers.formatUnits(finalUplineUsdc - initUplineUsdc, 6)} USDC`);
+
+  const pendingPayouts = await Payout.find();
+  console.log(`Database Payouts Generated: ${pendingPayouts.length}`);
+  
+  if (pendingPayouts.length > 0 && pendingPayouts[0].status === 'PAID') {
+      console.log("🎉 SUCCESS: Cron job successfully read the blockchain, calculated shares, transferred USDC, and saved PAID receipts!");
+  } else {
+      console.log("⚠️ WARNING: Cron job failed to mark payouts as PAID or did not generate them.");
   }
   
   console.log("\n==========================================");

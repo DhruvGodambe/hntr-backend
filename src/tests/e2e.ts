@@ -40,7 +40,7 @@ async function runE2E() {
     ancestors: [],
     directDownline: [],
     tier: 'Apex',
-    rank: 'Legend', // Start genesis at max rank for testing
+    rank: 'Legend Hunter', // Start genesis at max rank for testing
     teamVolume: 0,
     legVolumes: new Map(),
     joinedAt: new Date()

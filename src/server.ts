@@ -9,6 +9,7 @@ import userRoutes from './routes/users.routes';
 import networkRoutes from './routes/network.routes';
 import adminRoutes from './routes/admin.routes';
 import { BlockchainService } from './services/blockchain.service';
+import { initCronJobs } from './jobs/leadership-cron';
 
 const app = express();
 
@@ -37,6 +38,9 @@ const startServer = async () => {
         const blockchainService = new BlockchainService();
         blockchainService.startListening();
         logger.info('Blockchain Service Event Listener Started');
+
+        // Start background cron jobs
+        initCronJobs();
 
         app.listen(ENV.PORT, () => {
             logger.info(`Server successfully started on port ${ENV.PORT}`);

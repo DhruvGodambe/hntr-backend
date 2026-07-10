@@ -81,13 +81,13 @@ export class NetworkService {
     
     // 40/40/20 Rule
     const ranks = [
-        { name: 'Legend', volumeReq: 5000000 },
-        { name: 'Master', volumeReq: 2500000 },
-        { name: 'Elite', volumeReq: 1000000 },
-        { name: 'Apex', volumeReq: 500000 },
-        { name: 'Hunter', volumeReq: 100000 },
+        { name: 'Legend Hunter', volumeReq: 25000000 },
+        { name: 'Master Hunter', volumeReq: 5000000 },
+        { name: 'Elite Hunter', volumeReq: 1000000 },
+        { name: 'Hunter', volumeReq: 250000 },
         { name: 'Ranger', volumeReq: 50000 },
-        { name: 'Tracker', volumeReq: 10000 }
+        { name: 'Tracker', volumeReq: 10000 },
+        { name: 'Scout', volumeReq: 1000 }
     ];
 
     let newRank = user.rank;
