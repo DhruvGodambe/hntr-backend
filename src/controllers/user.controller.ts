@@ -24,9 +24,9 @@ export class UserController {
       }
 
       const unlockedFeatures = {
-        educationHub: FeatureGatingService.canAccessEducation(user.tier),
-        tailorOTC: FeatureGatingService.canAccessOTC(user.tier),
-        nftLending: FeatureGatingService.canAccessLending(user.tier)
+        educationHub: await FeatureGatingService.canAccessEducation(user.walletAddress),
+        tailorOTC: await FeatureGatingService.canAccessOTC(user.walletAddress),
+        nftLending: await FeatureGatingService.canAccessLending(user.walletAddress)
       };
 
       sendSuccess(res, { profile: user, unlockedFeatures }, 'Profile retrieved successfully');

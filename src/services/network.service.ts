@@ -1,5 +1,5 @@
 import User, { IUser } from '../models/User';
-
+import { RANK_REQUIREMENTS, TIER_VOLUMES } from '../constants';
 export class NetworkService {
   /**
    * getUplines fetches the closest 12 parent wallet addresses.
@@ -78,24 +78,16 @@ export class NetworkService {
     const volumesArray = Array.from(legVolumes.values()).sort((a, b) => b - a);
     
     const totalVolume = user.teamVolume;
+    const userTierLevel = this.getTierLevel(user.tier);
     
-    // 40/40/20 Rule
-    const ranks = [
-        { name: 'Legend Hunter', volumeReq: 25000000 },
-        { name: 'Master Hunter', volumeReq: 5000000 },
-        { name: 'Elite Hunter', volumeReq: 1000000 },
-        { name: 'Hunter', volumeReq: 250000 },
-        { name: 'Ranger', volumeReq: 50000 },
-        { name: 'Tracker', volumeReq: 10000 },
-        { name: 'Scout', volumeReq: 1000 }
-    ];
-
     let newRank = user.rank;
     
-    for (const rank of ranks) {
+    for (const rank of RANK_REQUIREMENTS) {
         if (this.check404020(volumesArray, rank.volumeReq)) {
-             newRank = rank.name as any;
-             break; // Found the highest qualifying rank
+             if (userTierLevel >= this.getRequiredTierLevelForRank(rank.name)) {
+                 newRank = rank.name as any;
+                 break; // Found the highest qualifying rank
+             }
         }
     }
 
@@ -130,13 +122,28 @@ export class NetworkService {
   }
   
   private static getTierVolume(tier: string): number {
-      switch(tier) {
-          case 'Scout': return 100;
-          case 'Tracker': return 500;
-          case 'Ranger': return 1000;
-          case 'Hunter': return 5000;
-          case 'Apex': return 10000;
-          default: return 0;
-      }
+      return TIER_VOLUMES[tier as keyof typeof TIER_VOLUMES] || 0;
+  }
+
+  private static getTierLevel(tier: string): number {
+    const levels = {
+      'None': 0, 'Scout': 1, 'Tracker': 2, 'Ranger': 3, 'Hunter': 4, 'Apex': 5
+    };
+    return (levels as any)[tier] || 0;
+  }
+
+  private static getRequiredTierLevelForRank(rankName: string): number {
+    switch (rankName) {
+      case 'Legend Hunter':
+      case 'Master Hunter':
+        return 5; // Apex
+      case 'Elite Hunter':
+      case 'Hunter':
+        return 4; // Hunter
+      case 'Ranger': return 3; // Ranger
+      case 'Tracker': return 2; // Tracker
+      case 'Scout': return 1; // Scout
+      default: return 0;
+    }
   }
 }

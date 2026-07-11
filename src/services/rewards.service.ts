@@ -10,11 +10,14 @@ export class RewardsService {
    */
   static async generateRankBonusReport() {
     // For demonstration, we just fetch all users with ranks >= Hunter
-    const eligibleUsers = await User.find({ rank: { $in: ['Hunter', 'Elite Hunter', 'Master Hunter', 'Legend Hunter'] } });
+    const eligibleUsers = await User.find({ rank: { $in: ['Scout', 'Tracker', 'Ranger', 'Hunter', 'Elite Hunter', 'Master Hunter', 'Legend Hunter'] } });
     
     // Typically, you'd filter by those who upgraded in the last 24h.
     // Assuming each rank has a fixed bonus
     const rankBonuses = {
+      'Scout': 25,
+      'Tracker': 150,
+      'Ranger': 750,
       'Hunter': 5000,
       'Elite Hunter': 25000,
       'Master Hunter': 100000,

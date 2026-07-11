@@ -4,7 +4,7 @@ import Transaction from '../models/Transaction';
 import { NetworkService } from './network.service';
 import { hntrContract } from './contract.service';
 import { logger } from '../utils/logger';
-import { Tier, CONTRACT_EVENTS } from '../constants';
+import { Tier, CONTRACT_EVENTS, TIER_VOLUMES } from '../constants';
 
 export class BlockchainService {
   public startListening() {
@@ -59,13 +59,6 @@ export class BlockchainService {
   }
 
   private getTierCost(tier: string): number {
-    switch(tier) {
-        case Tier.SCOUT: return 100;
-        case Tier.TRACKER: return 500;
-        case Tier.RANGER: return 1000;
-        case Tier.HUNTER: return 5000;
-        case Tier.APEX: return 10000;
-        default: return 0;
-    }
+    return TIER_VOLUMES[tier as Tier] || 0;
   }
 }

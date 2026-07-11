@@ -201,6 +201,36 @@ async function runFullCommissionFlow() {
     console.log("⚠️ WARNING: The backend database did not update. The BlockchainService might have missed the event or failed.");
   }
   
+  // 7.5 Test Rank Evaluation and Achievement Bonus Report
+  console.log("\n--- TESTING RANK EVALUATION & ACHIEVEMENT REPORT ---");
+  const { NetworkService } = await import('../services/network.service');
+  const { RewardsService: RS } = await import('../services/rewards.service');
+
+  console.log(`⏳ Simulating $5,000,000 leg volume for Upline (Hunter Tier)...`);
+  const uplineToUpdate = await User.findOne({ username: 'Upline' });
+  if (uplineToUpdate) {
+      uplineToUpdate.legVolumes.set('FakeLeg1', 2000000);
+      uplineToUpdate.legVolumes.set('FakeLeg2', 2000000);
+      uplineToUpdate.legVolumes.set('FakeLeg3', 1000000);
+      uplineToUpdate.teamVolume = 5000000;
+      await uplineToUpdate.save();
+      
+      const newRank = await NetworkService.evaluateRank('Upline');
+      console.log(`✅ Upline Evaluated Rank: ${newRank}`);
+      if (newRank === 'Elite Hunter' || newRank === 'Hunter') { // Capped because of Hunter tier
+          console.log(`   -> SUCCESS: Upline was restricted (capped at Elite Hunter/Hunter) because they lack the Apex tier for Master Hunter!`);
+      } else {
+          console.log(`   -> FAILED: Upline got rank ${newRank}, but should have been capped.`);
+      }
+  }
+
+  console.log(`⏳ Generating Rank Bonus Report...`);
+  const bonusReport = await RS.generateRankBonusReport();
+  console.log(`✅ Rank Bonus Report Generated: Found ${bonusReport.length} eligible users.`);
+  for (const b of bonusReport) {
+      console.log(`   - ${b.username} (${b.rank}): $${b.bonusAmount}`);
+  }
+
   // 8. Test Automated Cron Job (Leadership Payouts)
   console.log("\n--- TESTING MONTHLY LEADERSHIP CRON JOB ---");
   
