@@ -5,5 +5,6 @@ const router = Router();
 
 router.post('/register', UserController.register);
 router.get('/:username', UserController.getProfile);
+router.get('/wallet/:walletAddress', UserController.getProfileByWallet);
 
 export default router;

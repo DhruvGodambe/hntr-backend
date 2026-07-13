@@ -16,12 +16,37 @@ export class UserController {
   static async getProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { username } = req.params;
-      const user = await UserService.getUserByUsername(username as string);
+      let user = await UserService.getUserByUsername(username as string);
       
       if (!user) {
         res.status(404);
         throw new Error('User not found');
       }
+
+      user = await UserService.syncUserTierWithBlockchain(user);
+
+      const unlockedFeatures = {
+        educationHub: await FeatureGatingService.canAccessEducation(user.walletAddress),
+        tailorOTC: await FeatureGatingService.canAccessOTC(user.walletAddress),
+        nftLending: await FeatureGatingService.canAccessLending(user.walletAddress)
+      };
+
+      sendSuccess(res, { profile: user, unlockedFeatures }, 'Profile retrieved successfully');
+    } catch (error) {
+      next(error);
+    }
+  }
+  static async getProfileByWallet(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      let user = await UserService.getUserByWallet(walletAddress as string);
+      
+      if (!user) {
+        res.status(404);
+        throw new Error('User not found');
+      }
+
+      user = await UserService.syncUserTierWithBlockchain(user);
 
       const unlockedFeatures = {
         educationHub: await FeatureGatingService.canAccessEducation(user.walletAddress),

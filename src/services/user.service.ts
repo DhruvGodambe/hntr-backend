@@ -49,4 +49,23 @@ export class UserService {
   static async getUserByWallet(walletAddress: string): Promise<IUser | null> {
     return User.findOne({ walletAddress: walletAddress.toLowerCase() });
   }
+
+  static async syncUserTierWithBlockchain(user: IUser): Promise<IUser> {
+    try {
+      const { hntrContract } = await import('./contract.service');
+      const onChainData = await hntrContract.getUser(user.walletAddress);
+      const tierIndex = Number(onChainData[0]);
+      
+      const tierLevels = [Tier.NONE, Tier.SCOUT, Tier.TRACKER, Tier.RANGER, Tier.HUNTER, Tier.APEX];
+      const onchainTier = tierLevels[tierIndex] || Tier.NONE;
+
+      if (user.tier !== onchainTier) {
+        user.tier = onchainTier as any;
+        await user.save();
+      }
+    } catch (error) {
+      console.error(`Failed to sync tier for ${user.walletAddress}:`, error);
+    }
+    return user;
+  }
 }

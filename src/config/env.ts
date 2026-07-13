@@ -7,7 +7,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../../hntr/.env') });
 dotenv.config();
 
 export const ENV = {
-  PORT: process.env.PORT || 3000,
+  PORT: process.env.PORT || 8000,
   NODE_ENV: process.env.NODE_ENV || 'development',
   MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017/hntr',
   RPC_URL: process.env.RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',

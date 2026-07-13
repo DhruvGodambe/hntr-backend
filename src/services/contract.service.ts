@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 
 export const CONTRACT_ADDRESS = '0xd0930a746470f8555b18B7afdf118FAd05A71a00';
-export const RPC_URL = 'https://ethereum-sepolia-rpc.publicnode.com';
+export const RPC_URL = 'https://eth-sepolia.g.alchemy.com/v2/r41AzqLt60HmJEce6De154_STFu9oCar';
 
 export const contractABI = [
   {
@@ -509,4 +509,10 @@ export const contractABI = [
 ];
 
 export const provider = new ethers.JsonRpcProvider(RPC_URL);
+
+// Initialize Burner Wallet for relayer transactions
+const privateKey = process.env.PRIVATE_KEY || '0x0000000000000000000000000000000000000000000000000000000000000000';
+export const burnerWallet = new ethers.Wallet(privateKey, provider);
+
 export const hntrContract = new ethers.Contract(CONTRACT_ADDRESS, contractABI, provider);
+export const hntrContractWithSigner = hntrContract.connect(burnerWallet);
