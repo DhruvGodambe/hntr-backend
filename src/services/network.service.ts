@@ -1,5 +1,78 @@
+import { ethers } from 'ethers';
 import User, { IUser } from '../models/User';
-import { RANK_REQUIREMENTS, TIER_VOLUMES } from '../constants';
+import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank } from '../constants';
+import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20 } from './contract.service';
+import { getLogsViaEtherscan } from './etherscan.service';
+import { ENV } from '../config/env';
+
+const RANK_ORDER: Rank[] = [
+  Rank.NONE,
+  Rank.SCOUT,
+  Rank.TRACKER,
+  Rank.RANGER,
+  Rank.HUNTER,
+  Rank.ELITE,
+  Rank.MASTER,
+  Rank.LEGEND,
+];
+
+const RANK_THRESHOLDS: Record<string, number> = RANK_REQUIREMENTS.reduce(
+  (acc, { name, volumeReq }) => ({ ...acc, [name]: volumeReq }),
+  { [Rank.NONE]: 0 } as Record<string, number>,
+);
+
+export interface RankProgress {
+  percent: number;
+  currentRank: Rank;
+  nextRank: Rank | null;
+  currentThreshold: number;
+  nextThreshold: number | null;
+}
+
+export interface TokenBalance {
+  symbol: 'USDT' | 'USDC';
+  address: string;
+  claimable: number;
+  locked: number;
+}
+
+export interface LegProgress {
+  label: string;
+  volume: number;
+  cap: number;
+  percent: number;
+}
+
+export interface LegBreakdown {
+  competitive: LegProgress[]; // largest two legs, each capped at 40% of the next rank's goal
+  weakest: LegProgress; // every other leg combined, capped at 20% of the next rank's goal
+}
+
+export interface NetworkTreeNode {
+  username: string;
+  walletAddress: string;
+  tier: string;
+  rank: string;
+  personalVolume: number;
+  children: NetworkTreeNode[];
+}
+
+export interface RewardsSummary {
+  walletAddress: string;
+  username: string | null;
+  rank: string;
+  tier: string;
+  joinedAt: Date | null;
+  teamVolume: number;
+  networkSize: number;
+  progress: RankProgress;
+  legs: LegBreakdown;
+  claimableNow: number;
+  lockedRemaining: number;
+  totalRewarded: number;
+  tokens: TokenBalance[];
+}
+
 export class NetworkService {
   /**
    * getUplines fetches the closest 12 parent wallet addresses.
@@ -33,6 +106,43 @@ export class NetworkService {
     // Anyone who has this username in their ancestors array is in the downline.
     const downlines = await User.find({ ancestors: username });
     return downlines;
+  }
+
+  /**
+   * getNetworkTree builds a shallow (depth-limited) nested tree of a user's real
+   * downline, for the "Topology Matrix Mapping" visualization on the network
+   * page. Capped at maxDepth levels and maxNodes total nodes visited so a large
+   * network can't trigger unbounded recursion/DB round-trips.
+   */
+  static async getNetworkTree(username: string, maxDepth = 3, maxNodes = 200): Promise<NetworkTreeNode | null> {
+    let visited = 0;
+
+    const build = async (uname: string, depth: number): Promise<NetworkTreeNode | null> => {
+      const user = await User.findOne({ username: uname });
+      if (!user) return null;
+      visited += 1;
+
+      const node: NetworkTreeNode = {
+        username: user.username,
+        walletAddress: user.walletAddress,
+        tier: user.tier,
+        rank: user.rank,
+        personalVolume: this.getTierVolume(user.tier),
+        children: [],
+      };
+
+      if (depth < maxDepth) {
+        for (const childUsername of user.directDownline) {
+          if (visited >= maxNodes) break;
+          const child = await build(childUsername, depth + 1);
+          if (child) node.children.push(child);
+        }
+      }
+
+      return node;
+    };
+
+    return build(username, 0);
   }
 
   /**
@@ -144,6 +254,158 @@ export class NetworkService {
       case 'Tracker': return 2; // Tracker
       case 'Scout': return 1; // Scout
       default: return 0;
+    }
+  }
+
+  /** Computes how far a user's teamVolume is towards their next rank threshold. */
+  static getRankProgress(rank: string, teamVolume: number): RankProgress {
+    const currentRank = (rank as Rank) in RANK_THRESHOLDS ? (rank as Rank) : Rank.NONE;
+    const idx = RANK_ORDER.indexOf(currentRank);
+    const currentThreshold = RANK_THRESHOLDS[currentRank] ?? 0;
+    const nextRank = idx >= 0 && idx < RANK_ORDER.length - 1 ? RANK_ORDER[idx + 1] : null;
+
+    if (!nextRank) {
+      return { percent: 100, currentRank, nextRank: null, currentThreshold, nextThreshold: null };
+    }
+
+    const nextThreshold = RANK_THRESHOLDS[nextRank];
+    const span = nextThreshold - currentThreshold;
+    const percent = span > 0 ? Math.min(100, Math.max(0, ((teamVolume - currentThreshold) / span) * 100)) : 100;
+
+    return { percent: Math.round(percent), currentRank, nextRank, currentThreshold, nextThreshold };
+  }
+
+  /**
+   * Applies the same 40/40/20 rule used by evaluateRank/check404020 to the user's
+   * *current* legVolumes against the goal for their *next* rank, so the frontend
+   * can show real "how close am I" leg-by-leg progress instead of static numbers.
+   */
+  static getLegBreakdown(legVolumes: Map<string, number> | Record<string, number> | undefined, progress: RankProgress): LegBreakdown {
+    const entries = legVolumes instanceof Map ? Array.from(legVolumes.entries()) : Object.entries(legVolumes || {});
+    entries.sort((a, b) => b[1] - a[1]);
+
+    const goal = progress.nextThreshold ?? progress.currentThreshold;
+    const maxLeg40 = goal * 0.4;
+    const maxRest20 = goal * 0.2;
+
+    const toLegProgress = (label: string, volume: number, cap: number): LegProgress => ({
+      label,
+      volume,
+      cap,
+      percent: cap > 0 ? Math.min(100, Math.round((volume / cap) * 100)) : 0,
+    });
+
+    const [leg1, leg2, ...rest] = entries;
+    const restVolume = rest.reduce((sum, [, volume]) => sum + volume, 0);
+    const restLabel = rest.length === 0 ? 'No other legs yet' : rest.length === 1 ? rest[0][0] : `${rest.length} other legs`;
+
+    return {
+      competitive: [
+        toLegProgress(leg1?.[0] || 'No leg yet', leg1?.[1] || 0, maxLeg40),
+        toLegProgress(leg2?.[0] || 'No leg yet', leg2?.[1] || 0, maxLeg40),
+      ],
+      weakest: toLegProgress(restLabel, restVolume, maxRest20),
+    };
+  }
+
+  /**
+   * Combines on-chain commission state (source of truth for money) with the
+   * off-chain profile/rank (source of truth for the MLM tree) into the single
+   * payload the network page and dashboard right rail both need.
+   */
+  static async getRewardsSummary(walletAddress: string): Promise<RewardsSummary> {
+    const address = walletAddress.toLowerCase();
+    const user = await User.findOne({ walletAddress: address });
+
+    const [onChainUser, usdtAddress, usdcAddress] = await Promise.all([
+      hntrContract.getUser(address),
+      hntrContract.usdt(),
+      hntrContract.usdc(),
+    ]);
+
+    const tierIndex = Number(onChainUser[0]);
+    const tierNames = ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Apex'];
+
+    let claimableNow = 0;
+    let lockedRemaining = 0;
+    const tokens: TokenBalance[] = [];
+
+    for (const [symbol, tokenAddress] of [['USDT', usdtAddress], ['USDC', usdcAddress]] as const) {
+      const erc20 = getErc20(tokenAddress);
+      const [withdrawable, locked, decimals] = await Promise.all([
+        hntrContract.withdrawableCommissions(address, tokenAddress),
+        hntrContract.lockedCommissions(address, tokenAddress),
+        erc20.decimals().catch(() => 6),
+      ]);
+      const claimable = Number(ethers.formatUnits(withdrawable, decimals));
+      const lockedAmount = Number(ethers.formatUnits(locked, decimals));
+      claimableNow += claimable;
+      lockedRemaining += lockedAmount;
+      tokens.push({ symbol, address: tokenAddress, claimable, locked: lockedAmount });
+    }
+
+    const totalRewarded = await this.getLifetimeCommissionsEarned(address, [usdtAddress, usdcAddress]);
+
+    const rank = user?.rank || 'None';
+    const teamVolume = user?.teamVolume || 0;
+    const progress = this.getRankProgress(rank, teamVolume);
+
+    return {
+      walletAddress: address,
+      username: user?.username || null,
+      rank,
+      tier: tierNames[tierIndex] || 'None',
+      joinedAt: user?.joinedAt || null,
+      teamVolume,
+      networkSize: user ? await User.countDocuments({ ancestors: user.username }) : 0,
+      progress,
+      legs: this.getLegBreakdown(user?.legVolumes, progress),
+      claimableNow: Number(claimableNow.toFixed(2)),
+      lockedRemaining: Number(lockedRemaining.toFixed(2)),
+      totalRewarded: Number(totalRewarded.toFixed(2)),
+      tokens,
+    };
+  }
+
+  /**
+   * Sums every historical CommissionEarned log for this wallet directly from the
+   * chain (liquid + locked), independent of whether it has since been withdrawn.
+   * Fetched via Etherscan (see etherscan.service.ts) from the contract's deploy
+   * block onward, rather than raw `eth_getLogs`, so this is a true lifetime total
+   * instead of being limited to whatever recent window the public RPC allows.
+   */
+  private static async getLifetimeCommissionsEarned(address: string, tokenAddresses: string[]): Promise<number> {
+    try {
+      const iface = new ethers.Interface(contractABI);
+      const topic = ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)');
+      const paddedAddress = ethers.zeroPadValue(address, 32);
+
+      const logs = await getLogsViaEtherscan({
+        address: CONTRACT_ADDRESS,
+        topics: [topic, paddedAddress],
+        fromBlock: ENV.CONTRACT_DEPLOY_BLOCK,
+      });
+
+      const decimalsByToken = new Map<string, number>();
+      for (const tokenAddress of tokenAddresses) {
+        try {
+          decimalsByToken.set(tokenAddress.toLowerCase(), Number(await getErc20(tokenAddress).decimals()));
+        } catch {
+          decimalsByToken.set(tokenAddress.toLowerCase(), 6);
+        }
+      }
+
+      let total = 0;
+      for (const log of logs) {
+        const parsed = iface.parseLog({ topics: log.topics, data: log.data });
+        if (!parsed) continue;
+        const [, liquidAmount, lockedAmount, , token] = parsed.args;
+        const decimals = decimalsByToken.get(String(token).toLowerCase()) ?? 6;
+        total += Number(ethers.formatUnits(BigInt(liquidAmount) + BigInt(lockedAmount), decimals));
+      }
+      return total;
+    } catch {
+      return 0;
     }
   }
 }

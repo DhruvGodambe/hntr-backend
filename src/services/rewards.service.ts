@@ -1,7 +1,8 @@
 import User from '../models/User';
-import Payout from '../models/Payout';
+import Payout, { IPayoutBreakdownEntry } from '../models/Payout';
 import { ethers } from 'ethers';
-import { hntrContract, provider } from './contract.service';
+import { hntrContract, provider, getErc20 } from './contract.service';
+import { ENV } from '../config/env';
 
 export class RewardsService {
   /**
@@ -35,25 +36,39 @@ export class RewardsService {
   }
 
   /**
-   * Calculates the monthly leadership pool distribution based on live on-chain balances.
+   * Calculates the monthly leadership pool distribution based on live on-chain balances,
+   * and pays each eligible user's share directly to their wallet (a real ERC20
+   * `transfer`, not a claimable contract balance - leadership bonus is auto-deposited,
+   * no "claim" step needed).
+   *
+   * The pool can be funded in either supported stablecoin (HNTRMembership.sol routes
+   * 5% of every purchase/upgrade to `leadershipWallet` in whichever token the buyer
+   * paid with), and decimals are read live from each token rather than assumed, since
+   * the mock USDT/USDC used on this deployment use 18 decimals, not the usual 6.
    */
   static async calculateMonthlyLeadershipPool() {
-    // 1. Fetch on-chain balances
-    const usdcAddress = await hntrContract.usdc();
-    const leadershipWallet = await hntrContract.leadershipWallet();
-    
-    // Quick ABI just for checking balance and transferring
-    const erc20Abi = [
-      "function balanceOf(address owner) view returns (uint256)",
-      "function transfer(address to, uint256 amount) returns (bool)"
-    ];
-    const usdcContract = new ethers.Contract(usdcAddress, erc20Abi, provider);
-    
-    // Parse the live balance from the blockchain (assuming 6 decimals for USDC)
-    const rawBalance = await usdcContract.balanceOf(leadershipWallet);
-    const totalPoolUSDC = Number(ethers.formatUnits(rawBalance, 6));
+    const [usdtAddress, usdcAddress, leadershipWallet] = await Promise.all([
+      hntrContract.usdt(),
+      hntrContract.usdc(),
+      hntrContract.leadershipWallet(),
+    ]);
 
-    console.log(`Live Leadership Pool Balance: $${totalPoolUSDC} USDC`);
+    const tokenPools = await Promise.all(
+      ([
+        { symbol: 'USDT', address: usdtAddress },
+        { symbol: 'USDC', address: usdcAddress },
+      ] as const).map(async ({ symbol, address }) => {
+        const erc20 = getErc20(address);
+        const [rawBalance, decimals] = await Promise.all([
+          erc20.balanceOf(leadershipWallet),
+          erc20.decimals().catch(() => 6),
+        ]);
+        const decimalsNum = Number(decimals);
+        return { symbol, address, decimals: decimalsNum, balance: Number(ethers.formatUnits(rawBalance, decimalsNum)) };
+      }),
+    );
+
+    tokenPools.forEach((p) => console.log(`Live Leadership Pool Balance: $${p.balance} ${p.symbol}`));
 
     // 2. Fetch eligible users from DB
     const eligibleUsers = await User.find({ rank: { $in: ['Hunter', 'Elite Hunter', 'Master Hunter', 'Legend Hunter'] } });
@@ -66,7 +81,7 @@ export class RewardsService {
     };
 
     let totalShares = 0;
-    
+
     const userShares = eligibleUsers.map(u => {
       const shares = sharesMap[u.rank as keyof typeof sharesMap] || 0;
       totalShares += shares;
@@ -80,70 +95,76 @@ export class RewardsService {
 
     if (totalShares === 0) return [];
 
-    const valuePerShare = totalPoolUSDC / totalShares;
-
-    const payoutReport = userShares.map(u => ({
-      ...u,
-      payoutUSDC: u.shares * valuePerShare
-    }));
+    // 3. Set up the wallet that actually controls leadershipWallet's on-chain balance.
+    if (!ENV.LEADERSHIP_PRIVATE_KEY) {
+      throw new Error('LEADERSHIP_PRIVATE_KEY not found in environment for automated payouts!');
+    }
+    const adminWallet = new ethers.Wallet(ENV.LEADERSHIP_PRIVATE_KEY, provider);
 
     // Generate the current month string (YYYY-MM)
     const currentMonth = new Date().toISOString().slice(0, 7);
-
-    // Filter out users who already received a payout this month to prevent duplicates
     const payoutsSaved = [];
-    
-    // Set up wallet for execution
-    const privateKey = process.env.LEADERSHIP_PRIVATE_KEY;
-    if (!privateKey) {
-        throw new Error("LEADERSHIP_PRIVATE_KEY not found in environment for automated payouts!");
-    }
-    const adminWallet = new ethers.Wallet(privateKey, provider);
-    const usdcWithSigner = usdcContract.connect(adminWallet) as ethers.Contract;
 
-    for (const report of payoutReport) {
-      if (report.payoutUSDC <= 0) continue;
+    for (const userShare of userShares) {
+      if (userShare.shares <= 0) continue;
 
-      const existing = await Payout.findOne({ username: report.username, month: currentMonth });
-      if (!existing) {
-        let status: 'PENDING' | 'PAID' = 'PENDING';
-        let txHash = '';
+      // Skip users who already received a payout this month to prevent duplicates.
+      const existing = await Payout.findOne({ username: userShare.username, month: currentMonth });
+      if (existing) continue;
+
+      const breakdown: IPayoutBreakdownEntry[] = [];
+      let totalUSD = 0;
+
+      for (const pool of tokenPools) {
+        if (pool.balance <= 0) continue;
+        const valuePerShare = pool.balance / totalShares;
+        const amount = userShare.shares * valuePerShare;
+        if (amount <= 0) continue;
 
         try {
-            console.log(`Executing live transfer of $${report.payoutUSDC} USDC to ${report.walletAddress}...`);
-            // Parse amount to 6 decimals (USDC standard), making sure to truncate any excess floating point decimals
-            const formattedAmount = report.payoutUSDC.toFixed(6);
-            const amountToTransfer = ethers.parseUnits(formattedAmount, 6);
-            
-            // Execute Transfer
-            const tx = await usdcWithSigner.transfer(report.walletAddress, amountToTransfer);
-            console.log(`Transaction sent! Hash: ${tx.hash}`);
-            
-            // Wait for confirmation
-            await tx.wait(1);
-            console.log(`Transaction confirmed for ${report.username}.`);
-            
-            status = 'PAID';
-            txHash = tx.hash;
-        } catch (e: any) {
-            console.error(`Failed to transfer to ${report.walletAddress}:`, e.message);
-        }
+          console.log(`Executing live transfer of ${amount} ${pool.symbol} to ${userShare.walletAddress}...`);
+          const erc20WithSigner = getErc20(pool.address).connect(adminWallet) as ethers.Contract;
+          // Truncate to a sane precision before scaling to the token's real decimals -
+          // JS floating point division doesn't carry more real precision than this anyway.
+          const precision = Math.min(pool.decimals, 8);
+          const amountToTransfer = ethers.parseUnits(amount.toFixed(precision), pool.decimals);
 
-        const newPayout = await Payout.create({
-          walletAddress: report.walletAddress,
-          username: report.username,
-          rank: report.rank,
-          amountUSDC: report.payoutUSDC,
-          shares: report.shares,
-          month: currentMonth,
-          status: status,
-          txHash: txHash || undefined
-        });
-        payoutsSaved.push(newPayout);
+          const tx = await erc20WithSigner.transfer(userShare.walletAddress, amountToTransfer);
+          console.log(`Transaction sent! Hash: ${tx.hash}`);
+          await tx.wait(1);
+          console.log(`Transaction confirmed for ${userShare.username} (${pool.symbol}).`);
+
+          breakdown.push({ symbol: pool.symbol, tokenAddress: pool.address, amount, txHash: tx.hash, status: 'PAID' });
+          totalUSD += amount;
+        } catch (e: any) {
+          console.error(`Failed to transfer ${pool.symbol} to ${userShare.walletAddress}:`, e.message);
+          breakdown.push({ symbol: pool.symbol, tokenAddress: pool.address, amount, status: 'FAILED' });
+        }
       }
+
+      if (breakdown.length === 0) continue; // nothing payable this month for this user in any token
+
+      const paidEntry = breakdown.find((b) => b.status === 'PAID');
+      const newPayout = await Payout.create({
+        walletAddress: userShare.walletAddress,
+        username: userShare.username,
+        rank: userShare.rank,
+        amountUSDC: totalUSD,
+        shares: userShare.shares,
+        txHash: paidEntry?.txHash,
+        breakdown,
+        month: currentMonth,
+        status: paidEntry ? 'PAID' : 'FAILED',
+      });
+      payoutsSaved.push(newPayout);
     }
 
     console.log(`✅ Monthly Leadership Pool generated for ${currentMonth}. Created ${payoutsSaved.length} new payouts.`);
     return payoutsSaved;
+  }
+
+  /** Every leadership payout a wallet has ever received (most recent first), for the network page's Leadership Bonus card. */
+  static async getPayoutHistory(walletAddress: string) {
+    return Payout.find({ walletAddress: walletAddress.toLowerCase() }).sort({ createdAt: -1 });
   }
 }

@@ -1,518 +1,108 @@
 import { ethers } from 'ethers';
+import { ENV } from '../config/env';
+import { logger } from '../utils/logger';
 
-export const CONTRACT_ADDRESS = '0xd0930a746470f8555b18B7afdf118FAd05A71a00';
-export const RPC_URL = 'https://eth-sepolia.g.alchemy.com/v2/r41AzqLt60HmJEce6De154_STFu9oCar';
+export const CONTRACT_ADDRESS = ENV.CONTRACT_ADDRESS;
+export const RPC_URL = ENV.RPC_URL;
 
+/**
+ * Human-readable ABI kept in lockstep with IHNTRMembership.sol / HNTRMembership.sol.
+ * If you change the contract's public interface, update this ABI (or better: wire in
+ * the compiled artifact from `hntr/out/HNTRMembership.sol/HNTRMembership.json`).
+ */
 export const contractABI = [
-  {
-    "type": "constructor",
-    "inputs": [
-      {
-        "name": "_usdt",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "_usdc",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "achievementWallet",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "getUser",
-    "inputs": [
-      {
-        "name": "user",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "tuple",
-        "internalType": "struct IHNTRMembership.User",
-        "components": [
-          {
-            "name": "tier",
-            "type": "uint8",
-            "internalType": "enum IHNTRMembership.Tier"
-          },
-          {
-            "name": "joinedAt",
-            "type": "uint256",
-            "internalType": "uint256"
-          }
-        ]
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "leadershipWallet",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "levelPercentages",
-    "inputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "lockedCommissions",
-    "inputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "owner",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "purchaseMembership",
-    "inputs": [
-      {
-        "name": "tier",
-        "type": "uint8",
-        "internalType": "enum IHNTRMembership.Tier"
-      },
-      {
-        "name": "uplines",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "setWallets",
-    "inputs": [
-      {
-        "name": "_treasury",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "_leadership",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "_achievement",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "tierMaxLevels",
-    "inputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "enum IHNTRMembership.Tier"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "uint8"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "tierPrices",
-    "inputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "enum IHNTRMembership.Tier"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "treasuryWallet",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "upgradeMembership",
-    "inputs": [
-      {
-        "name": "newTier",
-        "type": "uint8",
-        "internalType": "enum IHNTRMembership.Tier"
-      },
-      {
-        "name": "uplines",
-        "type": "address[]",
-        "internalType": "address[]"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "usdc",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "usdt",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "users",
-    "inputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "tier",
-        "type": "uint8",
-        "internalType": "enum IHNTRMembership.Tier"
-      },
-      {
-        "name": "joinedAt",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "withdrawCommissions",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "withdrawableCommissions",
-    "inputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "event",
-    "name": "CommissionEarned",
-    "inputs": [
-      {
-        "name": "user",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "liquidAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "lockedAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "level",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "uint8"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "CommissionWithdrawn",
-    "inputs": [
-      {
-        "name": "user",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "MembershipPurchased",
-    "inputs": [
-      {
-        "name": "user",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "tier",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "enum IHNTRMembership.Tier"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "MembershipUpgraded",
-    "inputs": [
-      {
-        "name": "user",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "oldTier",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "enum IHNTRMembership.Tier"
-      },
-      {
-        "name": "newTier",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "enum IHNTRMembership.Tier"
-      },
-      {
-        "name": "amountPaid",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "WalletsUpdated",
-    "inputs": [
-      {
-        "name": "treasury",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      },
-      {
-        "name": "leadership",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      },
-      {
-        "name": "achievement",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "error",
-    "name": "SafeERC20FailedOperation",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  }
+  'constructor(address _usdt, address _usdc)',
+
+  // --- Views ---
+  'function usdt() view returns (address)',
+  'function usdc() view returns (address)',
+  'function treasuryWallet() view returns (address)',
+  'function leadershipWallet() view returns (address)',
+  'function achievementWallet() view returns (address)',
+  'function poolWallet() view returns (address)',
+  'function burnerWallet() view returns (address)',
+  'function owner() view returns (address)',
+  'function users(address) view returns (uint8 tier, uint256 joinedAt)',
+  'function tierPrices(uint8) view returns (uint256)',
+  'function tierMaxLevels(uint8) view returns (uint8)',
+  'function withdrawableCommissions(address, address) view returns (uint256)',
+  'function lockedCommissions(address, address) view returns (uint256)',
+  'function levelPercentages(uint256) view returns (uint256)',
+  'function getUser(address user) view returns (tuple(uint8 tier, uint256 joinedAt))',
+
+  // --- Owner admin ---
+  'function setWallets(address _treasury, address _leadership, address _achievement, address _poolWallet)',
+  'function setBurnerWallet(address _burnerWallet)',
+
+  // --- Burner-relayed writes ---
+  'function purchaseMembership(address user, uint8 tier, address[] uplines, address token)',
+  'function upgradeMembership(address user, uint8 newTier, address[] uplines, address token)',
+  'function withdrawCommissions(address user, address token)',
+
+  // --- Events ---
+  'event MembershipPurchased(address indexed user, uint8 tier, uint256 amount, address token)',
+  'event MembershipUpgraded(address indexed user, uint8 oldTier, uint8 newTier, uint256 amountPaid, address token)',
+  'event CommissionEarned(address indexed user, uint256 liquidAmount, uint256 lockedAmount, uint8 level, address token)',
+  'event CommissionWithdrawn(address indexed user, uint256 amount, address token)',
+  'event WalletsUpdated(address treasury, address leadership, address achievement, address poolWallet)',
+  'event BurnerWalletUpdated(address burnerWallet)',
+
+  // --- Errors (SafeERC20) ---
+  'error SafeERC20FailedOperation(address token)',
+];
+
+/** Minimal ERC20 ABI used for pre-flight allowance/balance checks before relaying a tx. */
+export const erc20ABI = [
+  'function balanceOf(address account) view returns (uint256)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function symbol() view returns (string)',
 ];
 
 export const provider = new ethers.JsonRpcProvider(RPC_URL);
 
-// Initialize Burner Wallet for relayer transactions
-const privateKey = process.env.PRIVATE_KEY || '0x0000000000000000000000000000000000000000000000000000000000000000';
-export const burnerWallet = new ethers.Wallet(privateKey, provider);
+if (!ENV.PRIVATE_KEY) {
+  logger.error('PRIVATE_KEY is not set - the burner relayer cannot sign any transaction (purchase/upgrade/claim will fail).');
+}
+
+// Burner wallet used to relay purchaseMembership / upgradeMembership / withdrawCommissions.
+export const burnerWallet = new ethers.Wallet(
+  ENV.PRIVATE_KEY || '0x0000000000000000000000000000000000000000000000000000000000000001',
+  provider,
+);
 
 export const hntrContract = new ethers.Contract(CONTRACT_ADDRESS, contractABI, provider);
 export const hntrContractWithSigner = hntrContract.connect(burnerWallet);
+
+export function getErc20(tokenAddress: string) {
+  return new ethers.Contract(tokenAddress, erc20ABI, provider);
+}
+
+/**
+ * Serializes every burner-signed transaction (purchase/upgrade/claim) through a single
+ * promise chain so concurrent requests can never collide on the burner wallet's nonce.
+ * A single Node process handles all writes here; if this service is ever scaled
+ * horizontally, replace this with a distributed lock/queue (e.g. Redis) around the
+ * same burner wallet key.
+ */
+class BurnerTxQueue {
+  private queue: Promise<unknown> = Promise.resolve();
+
+  enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn);
+    // Swallow errors here so one failed tx doesn't poison the rest of the queue.
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+}
+
+export const burnerTxQueue = new BurnerTxQueue();
+
+export async function getBurnerBalance(): Promise<bigint> {
+  return provider.getBalance(burnerWallet.address);
+}
+
+export async function checkBurnerBalanceHealthy(): Promise<{ healthy: boolean; balance: bigint }> {
+  const balance = await getBurnerBalance();
+  return { healthy: balance >= ENV.MIN_BURNER_BALANCE_WEI, balance };
+}

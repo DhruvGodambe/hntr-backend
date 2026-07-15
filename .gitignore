@@ -63,6 +63,9 @@ typings/
 .env.test
 .env.local
 
+# Generated protocol wallet keys - never commit
+generated-wallets.env
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 

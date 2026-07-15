@@ -8,8 +8,11 @@ import { errorHandler } from './middlewares/errorHandler';
 import userRoutes from './routes/users.routes';
 import networkRoutes from './routes/network.routes';
 import adminRoutes from './routes/admin.routes';
+import authRoutes from './routes/auth.routes';
+import membershipRoutes from './routes/membership.routes';
 import { BlockchainService } from './services/blockchain.service';
 import { initCronJobs } from './jobs/leadership-cron';
+import { startBurnerBalanceMonitor } from './jobs/burner-balance-monitor';
 
 const app = express();
 
@@ -18,8 +21,10 @@ app.use(cors());
 app.use(express.json());
 
 // Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/network', networkRoutes);
+app.use('/api/membership', membershipRoutes);
 app.use('/api/admin', adminRoutes);
 
 // Healthcheck
@@ -32,8 +37,15 @@ app.use(errorHandler);
 
 const startServer = async () => {
     try {
+        if (ENV.NODE_ENV === 'production' && ENV.JWT_SECRET === 'dev-insecure-secret-change-me') {
+            logger.error('JWT_SECRET is using the insecure default value in production. Set a strong JWT_SECRET env var.');
+        }
+        if (!ENV.PRIVATE_KEY) {
+            logger.error('PRIVATE_KEY is not set. The burner relayer cannot sign purchase/upgrade/claim transactions.');
+        }
+
         await connectDB();
-        
+
         // Start blockchain listener
         const blockchainService = new BlockchainService();
         blockchainService.startListening();
@@ -41,6 +53,7 @@ const startServer = async () => {
 
         // Start background cron jobs
         initCronJobs();
+        startBurnerBalanceMonitor();
 
         app.listen(ENV.PORT, () => {
             logger.info(`Server successfully started on port ${ENV.PORT}`);

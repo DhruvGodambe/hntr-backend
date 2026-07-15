@@ -1,16 +1,36 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export interface IPayoutBreakdownEntry {
+  symbol: string;
+  tokenAddress: string;
+  amount: number;
+  txHash?: string;
+  status: 'PAID' | 'FAILED';
+}
+
 export interface IPayout extends Document {
   walletAddress: string;
   username: string;
   rank: string;
-  amountUSDC: number;
+  amountUSDC: number; // total value across every stablecoin paid out, treated ~1:1 with USD
   shares: number;
-  txHash?: string;
+  txHash?: string; // kept for backward compat: mirrors breakdown[0].txHash
+  breakdown: IPayoutBreakdownEntry[]; // one entry per token actually transferred (USDT and/or USDC)
   month: string; // Storing as YYYY-MM
-  status: 'PENDING' | 'PAID';
+  status: 'PENDING' | 'PAID' | 'FAILED';
   createdAt: Date;
 }
+
+const PayoutBreakdownSchema = new Schema<IPayoutBreakdownEntry>(
+  {
+    symbol: { type: String, required: true },
+    tokenAddress: { type: String, required: true },
+    amount: { type: Number, required: true },
+    txHash: { type: String },
+    status: { type: String, enum: ['PAID', 'FAILED'], required: true },
+  },
+  { _id: false },
+);
 
 const PayoutSchema: Schema = new Schema({
   walletAddress: {
@@ -37,6 +57,10 @@ const PayoutSchema: Schema = new Schema({
   txHash: {
     type: String,
   },
+  breakdown: {
+    type: [PayoutBreakdownSchema],
+    default: [],
+  },
   month: {
     type: String,
     required: true,
@@ -44,7 +68,7 @@ const PayoutSchema: Schema = new Schema({
   },
   status: {
     type: String,
-    enum: ['PENDING', 'PAID'],
+    enum: ['PENDING', 'PAID', 'FAILED'],
     default: 'PENDING',
   },
   createdAt: {
