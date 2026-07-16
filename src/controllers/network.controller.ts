@@ -190,12 +190,16 @@ export class NetworkController {
           timestamp: record.timestamp ? new Date(record.timestamp).toISOString() : null,
         };
 
+        // Express calls this static method as a callback, so `this` is undefined
+        // inside nested arrow functions. Use the class name explicitly.
+        const toRaw = NetworkController.amountToRawString;
+
         switch (record.type) {
           case 'COMMISSION_EARNED':
             return {
               ...base,
-              amount: this.amountToRawString(record.liquidAmount ?? 0),
-              lockedAmount: this.amountToRawString(record.lockedAmount ?? 0),
+              amount: toRaw(record.liquidAmount ?? 0),
+              lockedAmount: toRaw(record.lockedAmount ?? 0),
               level: record.level ?? undefined,
               token: record.token,
             };
@@ -203,7 +207,7 @@ export class NetworkController {
           case 'COMMISSION_CLAIM':
             return {
               ...base,
-              amount: this.amountToRawString(record.amount),
+              amount: toRaw(record.amount),
               token: record.token,
               status: record.status,
             };
@@ -211,12 +215,12 @@ export class NetworkController {
           case 'UPGRADE':
             return {
               ...base,
-              amount: this.amountToRawString(record.amount),
+              amount: toRaw(record.amount),
               token: record.token,
               tier: record.tier,
             };
           default:
-            return { ...base, amount: this.amountToRawString(record.amount), token: record.token };
+            return { ...base, amount: toRaw(record.amount), token: record.token };
         }
       });
 

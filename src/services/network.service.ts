@@ -4,6 +4,7 @@ import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank } from '../constants';
 import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20 } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
+import { logger } from '../utils/logger';
 
 const RANK_ORDER: Rank[] = [
   Rank.NONE,
@@ -153,26 +154,39 @@ export class NetworkService {
     if (!user) throw new Error('User not found');
 
     const legVolumes = new Map<string, number>();
+    const directDownline = user.directDownline || [];
 
-    for (const direct of user.directDownline) {
+    logger.info(`Calculating leg volumes for ${username}: directDownline=[${directDownline.join(', ')}]`);
+
+    for (const direct of directDownline) {
         // Find everyone under this direct downline, plus the direct downline themselves.
         const downlinesOfDirect = await User.find({ ancestors: direct });
         const directUser = await User.findOne({ username: direct });
-        
+
         let totalVolume = 0;
-        if (directUser) totalVolume += this.getTierVolume(directUser.tier);
-        
-        for (const dl of downlinesOfDirect) {
-            totalVolume += this.getTierVolume(dl.tier);
+        if (directUser) {
+            totalVolume += this.getTierVolume(directUser.tier);
+            logger.info(`  Leg ${direct}: direct user tier=${directUser.tier}, volume=${this.getTierVolume(directUser.tier)}`);
+        } else {
+            logger.warn(`  Leg ${direct}: direct user not found in database`);
         }
-        
+
+        for (const dl of downlinesOfDirect) {
+            const dlVolume = this.getTierVolume(dl.tier);
+            totalVolume += dlVolume;
+            logger.info(`  Leg ${direct}: descendant ${dl.username} tier=${dl.tier}, volume=${dlVolume}`);
+        }
+
         legVolumes.set(direct, totalVolume);
+        logger.info(`  Leg ${direct}: total=${totalVolume}`);
     }
-    
+
     user.legVolumes = legVolumes;
     user.teamVolume = Array.from(legVolumes.values()).reduce((sum, current) => sum + current, 0);
     await user.save();
-    
+
+    logger.info(`Saved ${username}: teamVolume=${user.teamVolume}, legs=${JSON.stringify(Object.fromEntries(legVolumes))}`);
+
     return legVolumes;
   }
 

@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { connectDB } from '../config/db';
+import User from '../models/User';
 import { NetworkService } from '../services/network.service';
 import { logger } from '../utils/logger';
 
@@ -17,10 +18,21 @@ async function fix0G() {
   try {
     await connectDB();
 
-    logger.info('Starting 0G volume repair...');
-    const results = await NetworkService.recalculateUplineVolumes('OG');
+    const username = process.argv[2] || '0G';
+    logger.info(`Starting volume repair for ${username}...`);
 
-    logger.info('0G repair complete. Updated chain:');
+    const user = await User.findOne({ username });
+    if (!user) {
+      logger.error(`User "${username}" not found in database.`);
+      await mongoose.disconnect();
+      process.exit(1);
+    }
+
+    logger.info(`Found ${username}: directDownline=[${user.directDownline.join(', ')}], currentTeamVolume=${user.teamVolume}`);
+
+    const results = await NetworkService.recalculateUplineVolumes(username);
+
+    logger.info(`${username} repair complete. Updated chain:`);
     for (const result of results) {
       logger.info(`  ${result.username}: teamVolume=${result.teamVolume}, rank=${result.rank}`);
     }

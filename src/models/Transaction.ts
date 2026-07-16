@@ -19,10 +19,8 @@ const TransactionSchema: Schema = new Schema({
   txHash: {
     type: String,
     // Not required: a PENDING relay record is created before the tx is broadcast
-    // and does not have a hash yet. `sparse` lets many docs share a missing txHash
-    // while still enforcing uniqueness once one is set.
-    unique: true,
-    sparse: true,
+    // and does not have a hash yet. No longer unique here because a single tx can
+    // emit multiple events (e.g. MembershipPurchased + several CommissionEarned).
     index: true,
   },
   walletAddress: {
@@ -67,6 +65,13 @@ const TransactionSchema: Schema = new Schema({
     default: Date.now,
   },
 });
+
+// A single transaction can emit multiple events for different wallets/levels/tokens,
+// so uniqueness is enforced on the combined key rather than txHash alone.
+TransactionSchema.index(
+  { txHash: 1, walletAddress: 1, type: 1, token: 1, level: 1 },
+  { unique: true },
+);
 
 // Prevent a second PURCHASE/UPGRADE/COMMISSION_CLAIM relay from being submitted for the same wallet
 // while one is still in flight (e.g. a double-click, or a retried request racing a
