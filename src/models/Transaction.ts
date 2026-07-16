@@ -67,10 +67,11 @@ const TransactionSchema: Schema = new Schema({
 });
 
 // A single transaction can emit multiple events for different wallets/levels/tokens,
-// so uniqueness is enforced on the combined key rather than txHash alone.
+// so uniqueness is enforced on the combined key rather than txHash alone. Sparse so
+// PENDING records (which have no txHash yet) don't collide with confirmed records.
 TransactionSchema.index(
   { txHash: 1, walletAddress: 1, type: 1, token: 1, level: 1 },
-  { unique: true },
+  { unique: true, sparse: true },
 );
 
 // Prevent a second PURCHASE/UPGRADE/COMMISSION_CLAIM relay from being submitted for the same wallet
