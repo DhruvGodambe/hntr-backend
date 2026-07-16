@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import User from '../models/User';
 import Transaction from '../models/Transaction';
 import { RewardsService } from '../services/rewards.service';
+import { NetworkService } from '../services/network.service';
 import { sendSuccess } from '../utils/response';
 
 export class AdminController {
@@ -33,6 +34,32 @@ export class AdminController {
     try {
       const payouts = await RewardsService.calculateMonthlyLeadershipPool();
       sendSuccess(res, { payouts }, `Generated ${payouts.length} leadership payout(s)`);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Forces a recalculation of leg volumes, team volume, and rank for a user and
+   * every upline ancestor. Useful when a purchase/upgrade was processed but a
+   * wallet's volume looks stale because an earlier listener tick failed part-way.
+   */
+  static async recalculateVolumes(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { username } = req.body;
+      if (!username || typeof username !== 'string') {
+        sendSuccess(res, { error: 'username is required' }, 'Missing username', 400);
+        return;
+      }
+
+      const user = await User.findOne({ username });
+      if (!user) {
+        sendSuccess(res, { error: 'User not found' }, 'User not found', 404);
+        return;
+      }
+
+      const results = await NetworkService.recalculateUplineVolumes(username);
+      sendSuccess(res, { results }, `Recalculated volumes for ${results.length} user(s)`);
     } catch (error) {
       next(error);
     }

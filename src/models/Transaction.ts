@@ -3,10 +3,13 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface ITransaction extends Document {
   txHash?: string;
   walletAddress: string;
-  type: 'PURCHASE' | 'UPGRADE' | 'COMMISSION_CLAIM';
+  type: 'PURCHASE' | 'UPGRADE' | 'COMMISSION_CLAIM' | 'COMMISSION_EARNED' | 'COMMISSION_WITHDRAWN';
   tier?: string;
   token?: string;
-  amount: number;
+  amount: number; // total for COMMISSION_EARNED, withdrawn amount for COMMISSION_WITHDRAWN
+  liquidAmount?: number; // 80% of the commission (claimable part)
+  lockedAmount?: number; // 20% of the commission (locked / pool-wallet part)
+  level?: number; // referral level for COMMISSION_EARNED (1-12)
   status: 'PENDING' | 'CONFIRMED' | 'FAILED';
   errorMessage?: string;
   timestamp: Date;
@@ -29,7 +32,7 @@ const TransactionSchema: Schema = new Schema({
   },
   type: {
     type: String,
-    enum: ['PURCHASE', 'UPGRADE', 'COMMISSION_CLAIM'],
+    enum: ['PURCHASE', 'UPGRADE', 'COMMISSION_CLAIM', 'COMMISSION_EARNED', 'COMMISSION_WITHDRAWN'],
     required: true,
   },
   tier: {
@@ -41,6 +44,15 @@ const TransactionSchema: Schema = new Schema({
   amount: {
     type: Number,
     required: true,
+  },
+  liquidAmount: {
+    type: Number,
+  },
+  lockedAmount: {
+    type: Number,
+  },
+  level: {
+    type: Number,
   },
   status: {
     type: String,
@@ -56,7 +68,7 @@ const TransactionSchema: Schema = new Schema({
   },
 });
 
-// Prevent a second PURCHASE/UPGRADE relay from being submitted for the same wallet
+// Prevent a second PURCHASE/UPGRADE/COMMISSION_CLAIM relay from being submitted for the same wallet
 // while one is still in flight (e.g. a double-click, or a retried request racing a
 // backend restart).
 TransactionSchema.index(

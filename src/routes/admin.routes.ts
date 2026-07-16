@@ -6,5 +6,6 @@ const router = Router();
 
 router.get('/dashboard', AdminController.getDashboardStats);
 router.post('/run-leadership-payout', requireAdminSecret, AdminController.runLeadershipPayout);
+router.post('/recalculate-volumes', requireAdminSecret, AdminController.recalculateVolumes);
 
 export default router;

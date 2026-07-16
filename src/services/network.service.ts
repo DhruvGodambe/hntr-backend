@@ -209,6 +209,43 @@ export class NetworkService {
     return newRank;
   }
 
+  /**
+   * Recalculates leg volumes and team volume for a single user.
+   * Also re-evaluates their rank so the stored state is fully consistent.
+   */
+  static async recalculateVolumes(username: string): Promise<{ username: string; teamVolume: number; rank: string }> {
+    const rank = await this.evaluateRank(username);
+    const user = await User.findOne({ username });
+    return {
+      username,
+      teamVolume: user?.teamVolume ?? 0,
+      rank,
+    };
+  }
+
+  /**
+   * Recalculates volumes and ranks for a user and every upline ancestor.
+   * Use this after a downline purchase/upgrade to ensure the whole chain is
+   * updated even if a previous listener tick failed part-way through.
+   */
+  static async recalculateUplineVolumes(username: string): Promise<{ username: string; teamVolume: number; rank: string }[]> {
+    const user = await User.findOne({ username });
+    if (!user) throw new Error('User not found');
+
+    const targets = [username, ...user.ancestors];
+    const results: { username: string; teamVolume: number; rank: string }[] = [];
+
+    for (const target of targets) {
+      try {
+        results.push(await this.recalculateVolumes(target));
+      } catch (err: any) {
+        throw new Error(`Failed to recalculate volumes for ${target}: ${err.message}`);
+      }
+    }
+
+    return results;
+  }
+
   private static check404020(sortedVolumes: number[], reqVol: number): boolean {
     if (sortedVolumes.length === 0) return false;
     
