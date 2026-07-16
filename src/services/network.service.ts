@@ -253,7 +253,9 @@ export class NetworkService {
       try {
         results.push(await this.recalculateVolumes(target));
       } catch (err: any) {
-        throw new Error(`Failed to recalculate volumes for ${target}: ${err.message}`);
+        // Don't let one broken ancestor (e.g. a missing username in the chain)
+        // stop the rest of the upline from being recalculated. Log and continue.
+        logger.error(`Failed to recalculate volumes for ${target}: ${err.message}`);
       }
     }
 

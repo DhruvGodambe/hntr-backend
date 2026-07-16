@@ -124,30 +124,29 @@ export class BlockchainService {
         return;
       }
 
-      // Avoid duplicate purchase/upgrade records for the same transaction.
+      // Avoid duplicate purchase/upgrade records for the same transaction, but
+      // always recalculate the upline chain — if a previous run failed part-way
+      // the transaction record may already exist while the volumes are still stale.
       const existing = await Transaction.findOne({ txHash, walletAddress: user.walletAddress, type });
-      if (existing) {
-        logger.info(`Duplicate ${type} tx skipped: ${txHash}`);
-        return;
+      if (!existing) {
+        await Transaction.create({
+          txHash,
+          walletAddress: user.walletAddress,
+          type,
+          tier: tierStr,
+          amount: this.getTierCost(tierStr),
+          timestamp: new Date()
+        });
+      } else {
+        logger.info(`Duplicate ${type} tx record skipped: ${txHash}; still recalculating volumes`);
       }
-
-      await Transaction.create({
-        txHash,
-        walletAddress: user.walletAddress,
-        type,
-        tier: tierStr,
-        amount: this.getTierCost(tierStr),
-        timestamp: new Date()
-      });
 
       const oldTier = user.tier;
       user.tier = tierStr as any;
       await user.save();
 
       // Recalculate the entire upline chain so every ancestor's leg volume and
-      // team volume reflects the new purchase/upgrade. We use recalculateUplineVolumes
-      // instead of evaluateRank directly so the whole chain is recomputed in a single
-      // call and failures are surfaced clearly.
+      // team volume reflects the new purchase/upgrade.
       try {
         const results = await NetworkService.recalculateUplineVolumes(user.username);
         for (const result of results) {
