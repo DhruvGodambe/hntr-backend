@@ -3,7 +3,7 @@ import User from '../models/User';
 import Transaction from '../models/Transaction';
 import SyncState from '../models/SyncState';
 import { NetworkService } from './network.service';
-import { provider, CONTRACT_ADDRESS, contractABI, getErc20 } from './contract.service';
+import { provider, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals } from './contract.service';
 import { logger } from '../utils/logger';
 import { Tier, CONTRACT_EVENTS, TIER_VOLUMES } from '../constants';
 
@@ -177,9 +177,9 @@ export class BlockchainService {
         logger.warn(`User with wallet ${walletAddress} not found in DB for commission event`);
       }
 
-      const decimals = await this.getTokenDecimals(tokenAddress);
-      const liquid = Number(ethers.formatUnits(liquidAmount, decimals));
-      const locked = Number(ethers.formatUnits(lockedAmount, decimals));
+      const amountDecimals = await getContractAmountDecimals();
+      const liquid = Number(ethers.formatUnits(liquidAmount, amountDecimals));
+      const locked = Number(ethers.formatUnits(lockedAmount, amountDecimals));
       const total = liquid + locked;
 
       // Avoid duplicate entries for the same tx + wallet + level + token.
@@ -221,8 +221,8 @@ export class BlockchainService {
     txHash: string,
   ) {
     try {
-      const decimals = await this.getTokenDecimals(tokenAddress);
-      const withdrawn = Number(ethers.formatUnits(amount, decimals));
+      const amountDecimals = await getContractAmountDecimals();
+      const withdrawn = Number(ethers.formatUnits(amount, amountDecimals));
 
       const existing = await Transaction.findOne({
         txHash,
@@ -248,14 +248,6 @@ export class BlockchainService {
       logger.info(`Stored COMMISSION_WITHDRAWN for ${walletAddress}: -$${withdrawn.toFixed(2)}`);
     } catch (error: any) {
       logger.error('Error processing CommissionWithdrawn event:', error.message);
-    }
-  }
-
-  private async getTokenDecimals(tokenAddress: string): Promise<number> {
-    try {
-      return Number(await getErc20(tokenAddress).decimals());
-    } catch {
-      return 6;
     }
   }
 

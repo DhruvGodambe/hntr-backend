@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import { ENV } from '../config/env';
+import { Tier, TIER_VOLUMES } from '../constants';
 import { logger } from '../utils/logger';
 
 export const CONTRACT_ADDRESS = ENV.CONTRACT_ADDRESS;
@@ -105,4 +106,34 @@ export async function getBurnerBalance(): Promise<bigint> {
 export async function checkBurnerBalanceHealthy(): Promise<{ healthy: boolean; balance: bigint }> {
   const balance = await getBurnerBalance();
   return { healthy: balance >= ENV.MIN_BURNER_BALANCE_WEI, balance };
+}
+
+let cachedAmountDecimals: number | null = null;
+
+/**
+ * The HNTRMembership contract stores/emit amounts in its own internal decimal scale,
+ * which may differ from the ERC20 token decimals (e.g. 6 vs 18). We detect it once by
+ * comparing the raw Scout tier price to the known $50 price so commission balances,
+ * event amounts, and transfer amounts all use the same scale.
+ */
+export async function getContractAmountDecimals(): Promise<number> {
+  if (cachedAmountDecimals !== null) {
+    return cachedAmountDecimals;
+  }
+
+  try {
+    const scoutIndex = 1; // Scout tier
+    const rawPrice = await hntrContract.tierPrices(scoutIndex);
+    const expectedPrice = TIER_VOLUMES[Tier.SCOUT]; // 50
+    const rawPerDollar = Number(rawPrice) / expectedPrice;
+    const decimals = Math.round(Math.log10(rawPerDollar));
+
+    cachedAmountDecimals = decimals > 0 ? decimals : 18;
+    logger.info(`Detected contract amount decimals: ${cachedAmountDecimals} (rawPrice=${rawPrice}, expected=${expectedPrice})`);
+  } catch (err: any) {
+    logger.warn(`Failed to detect contract amount decimals: ${err.message}; falling back to 18`);
+    cachedAmountDecimals = 18;
+  }
+
+  return cachedAmountDecimals;
 }

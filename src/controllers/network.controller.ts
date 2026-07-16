@@ -3,7 +3,7 @@ import { ethers } from 'ethers';
 import { NetworkService } from '../services/network.service';
 import { RewardsService } from '../services/rewards.service';
 import User from '../models/User';
-import { hntrContractWithSigner, burnerTxQueue, contractABI, CONTRACT_ADDRESS } from '../services/contract.service';
+import { hntrContractWithSigner, burnerTxQueue, contractABI, CONTRACT_ADDRESS, getContractAmountDecimals } from '../services/contract.service';
 import { getLogsViaEtherscan } from '../services/etherscan.service';
 import { ENV } from '../config/env';
 import Transaction from '../models/Transaction';
@@ -104,6 +104,7 @@ export class NetworkController {
       const { walletAddress } = req.params;
       const limit = Math.min(Number(req.query.limit) || 25, 100);
       const iface = new ethers.Interface(contractABI);
+      const amountDecimals = await getContractAmountDecimals();
 
       const addressString = Array.isArray(walletAddress) ? walletAddress[0] : walletAddress;
       const normalizedAddress = addressString.toLowerCase();
@@ -143,6 +144,8 @@ export class NetworkController {
 
       const flatLogs = allLogs.flat().sort((a, b) => b.log.blockNumber - a.log.blockNumber).slice(0, limit);
 
+      const toDollars = (raw: bigint): string => ethers.formatUnits(raw, amountDecimals);
+
       const chainTransactions = flatLogs.map(({ type, log }) => {
         const parsed = iface.parseLog({ topics: log.topics, data: log.data });
         const base = {
@@ -159,23 +162,23 @@ export class NetworkController {
             const [, liquidAmount, lockedAmount, level, token] = parsed.args;
             return {
               ...base,
-              amount: liquidAmount.toString(),
-              lockedAmount: lockedAmount.toString(),
+              amount: toDollars(BigInt(liquidAmount.toString())),
+              lockedAmount: toDollars(BigInt(lockedAmount.toString())),
               level: Number(level),
               token,
             };
           }
           case 'CommissionWithdrawn': {
             const [, amount, token] = parsed.args;
-            return { ...base, amount: amount.toString(), token };
+            return { ...base, amount: toDollars(BigInt(amount.toString())), token };
           }
           case 'MembershipPurchased': {
             const [, tier, amount, token] = parsed.args;
-            return { ...base, amount: amount.toString(), token, tier: TIER_NAMES[Number(tier)] || 'None' };
+            return { ...base, amount: toDollars(BigInt(amount.toString())), token, tier: TIER_NAMES[Number(tier)] || 'None' };
           }
           case 'MembershipUpgraded': {
             const [, , newTier, amountPaid, token] = parsed.args;
-            return { ...base, amount: amountPaid.toString(), token, tier: TIER_NAMES[Number(newTier)] || 'None' };
+            return { ...base, amount: toDollars(BigInt(amountPaid.toString())), token, tier: TIER_NAMES[Number(newTier)] || 'None' };
           }
           default:
             return { ...base, amount: null, token: null };
@@ -190,16 +193,15 @@ export class NetworkController {
           timestamp: record.timestamp ? new Date(record.timestamp).toISOString() : null,
         };
 
-        // Express calls this static method as a callback, so `this` is undefined
-        // inside nested arrow functions. Use the class name explicitly.
-        const toRaw = NetworkController.amountToRawString;
+        // DB records already store dollar amounts; the frontend now displays them directly.
+        const amount = (value: number | undefined): string => (value ?? 0).toFixed(2);
 
         switch (record.type) {
           case 'COMMISSION_EARNED':
             return {
               ...base,
-              amount: toRaw(record.liquidAmount ?? 0),
-              lockedAmount: toRaw(record.lockedAmount ?? 0),
+              amount: amount(record.liquidAmount),
+              lockedAmount: amount(record.lockedAmount),
               level: record.level ?? undefined,
               token: record.token,
             };
@@ -207,7 +209,7 @@ export class NetworkController {
           case 'COMMISSION_CLAIM':
             return {
               ...base,
-              amount: toRaw(record.amount),
+              amount: amount(record.amount),
               token: record.token,
               status: record.status,
             };
@@ -215,12 +217,12 @@ export class NetworkController {
           case 'UPGRADE':
             return {
               ...base,
-              amount: toRaw(record.amount),
+              amount: amount(record.amount),
               token: record.token,
               tier: record.tier,
             };
           default:
-            return { ...base, amount: toRaw(record.amount), token: record.token };
+            return { ...base, amount: amount(record.amount), token: record.token };
         }
       });
 
@@ -250,11 +252,6 @@ export class NetworkController {
       console.error("Failed to get transactions:", error);
       next(error);
     }
-  }
-
-  private static amountToRawString(value: number): string {
-    // The frontend expects raw 6-decimal ERC20 amounts as strings.
-    return Math.round(value * 1e6).toString();
   }
 
   static async getRewardsSummary(req: Request, res: Response, next: NextFunction): Promise<void> {

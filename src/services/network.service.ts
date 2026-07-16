@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import User, { IUser } from '../models/User';
 import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank } from '../constants';
-import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20 } from './contract.service';
+import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
 import { logger } from '../utils/logger';
@@ -310,8 +310,14 @@ export class NetworkService {
     }
   }
 
-  /** Computes how far a user's teamVolume is towards their next rank threshold. */
-  static getRankProgress(rank: string, teamVolume: number): RankProgress {
+  /** Computes how far a user's qualifying volume is towards their next rank threshold.
+   * Uses the 40/40/20 leg cap rule so a single whale leg cannot carry the progress bar.
+   */
+  static getRankProgress(
+    rank: string,
+    teamVolume: number,
+    legVolumes?: Map<string, number> | Record<string, number>,
+  ): RankProgress {
     const currentRank = (rank as Rank) in RANK_THRESHOLDS ? (rank as Rank) : Rank.NONE;
     const idx = RANK_ORDER.indexOf(currentRank);
     const currentThreshold = RANK_THRESHOLDS[currentRank] ?? 0;
@@ -322,10 +328,29 @@ export class NetworkService {
     }
 
     const nextThreshold = RANK_THRESHOLDS[nextRank];
+    const qualifyingVolume = this.getQualifyingVolume(legVolumes, nextThreshold);
     const span = nextThreshold - currentThreshold;
-    const percent = span > 0 ? Math.min(100, Math.max(0, ((teamVolume - currentThreshold) / span) * 100)) : 100;
+    const percent = span > 0 ? Math.min(100, Math.max(0, ((qualifyingVolume - currentThreshold) / span) * 100)) : 100;
 
     return { percent: Math.round(percent), currentRank, nextRank, currentThreshold, nextThreshold };
+  }
+
+  private static getQualifyingVolume(
+    legVolumes: Map<string, number> | Record<string, number> | undefined,
+    goal: number,
+  ): number {
+    const entries = legVolumes instanceof Map ? Array.from(legVolumes.entries()) : Object.entries(legVolumes || {});
+    const sortedVolumes = entries.map(([, volume]) => volume).sort((a, b) => b - a);
+
+    const maxLeg40 = goal * 0.4;
+    const maxRest20 = goal * 0.2;
+
+    let effectiveVol = 0;
+    effectiveVol += Math.min(sortedVolumes[0] || 0, maxLeg40);
+    effectiveVol += Math.min(sortedVolumes[1] || 0, maxLeg40);
+    effectiveVol += Math.min(sortedVolumes.slice(2).reduce((sum, v) => sum + v, 0), maxRest20);
+
+    return effectiveVol;
   }
 
   /**
@@ -382,26 +407,32 @@ export class NetworkService {
     let claimableNow = 0;
     let lockedRemaining = 0;
     const tokens: TokenBalance[] = [];
+    const amountDecimals = await getContractAmountDecimals();
 
     for (const [symbol, tokenAddress] of [['USDT', usdtAddress], ['USDC', usdcAddress]] as const) {
-      const erc20 = getErc20(tokenAddress);
-      const [withdrawable, locked, decimals] = await Promise.all([
+      const [withdrawable, locked] = await Promise.all([
         hntrContract.withdrawableCommissions(address, tokenAddress),
         hntrContract.lockedCommissions(address, tokenAddress),
-        erc20.decimals().catch(() => 6),
       ]);
-      const claimable = Number(ethers.formatUnits(withdrawable, decimals));
-      const lockedAmount = Number(ethers.formatUnits(locked, decimals));
+      const claimable = Number(ethers.formatUnits(withdrawable, amountDecimals));
+      const lockedAmount = Number(ethers.formatUnits(locked, amountDecimals));
       claimableNow += claimable;
       lockedRemaining += lockedAmount;
       tokens.push({ symbol, address: tokenAddress, claimable, locked: lockedAmount });
+      logger.info(
+        `Contract balance for ${address} ${symbol}: withdrawable=${claimable}, locked=${lockedAmount}, amountDecimals=${amountDecimals}`
+      );
     }
 
-    const totalRewarded = await this.getLifetimeCommissionsEarned(address, [usdtAddress, usdcAddress]);
+    const totalRewarded = await this.getLifetimeCommissionsEarned(address, [usdtAddress, usdcAddress], amountDecimals);
 
     const rank = user?.rank || 'None';
     const teamVolume = user?.teamVolume || 0;
-    const progress = this.getRankProgress(rank, teamVolume);
+    const progress = this.getRankProgress(rank, teamVolume, user?.legVolumes);
+
+    logger.info(
+      `Rewards summary for ${address}: rank=${rank}, teamVolume=${teamVolume}, qualifyingProgress=${progress.percent}%, claimableNow=${claimableNow}, lockedRemaining=${lockedRemaining}, totalRewarded=${totalRewarded}`
+    );
 
     return {
       walletAddress: address,
@@ -427,7 +458,7 @@ export class NetworkService {
    * block onward, rather than raw `eth_getLogs`, so this is a true lifetime total
    * instead of being limited to whatever recent window the public RPC allows.
    */
-  private static async getLifetimeCommissionsEarned(address: string, tokenAddresses: string[]): Promise<number> {
+  private static async getLifetimeCommissionsEarned(address: string, tokenAddresses: string[], amountDecimals: number): Promise<number> {
     try {
       const iface = new ethers.Interface(contractABI);
       const topic = ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)');
@@ -439,22 +470,12 @@ export class NetworkService {
         fromBlock: ENV.CONTRACT_DEPLOY_BLOCK,
       });
 
-      const decimalsByToken = new Map<string, number>();
-      for (const tokenAddress of tokenAddresses) {
-        try {
-          decimalsByToken.set(tokenAddress.toLowerCase(), Number(await getErc20(tokenAddress).decimals()));
-        } catch {
-          decimalsByToken.set(tokenAddress.toLowerCase(), 6);
-        }
-      }
-
       let total = 0;
       for (const log of logs) {
         const parsed = iface.parseLog({ topics: log.topics, data: log.data });
         if (!parsed) continue;
-        const [, liquidAmount, lockedAmount, , token] = parsed.args;
-        const decimals = decimalsByToken.get(String(token).toLowerCase()) ?? 6;
-        total += Number(ethers.formatUnits(BigInt(liquidAmount) + BigInt(lockedAmount), decimals));
+        const [, liquidAmount, lockedAmount] = parsed.args;
+        total += Number(ethers.formatUnits(BigInt(liquidAmount) + BigInt(lockedAmount), amountDecimals));
       }
       return total;
     } catch {
