@@ -3,6 +3,7 @@ import { ethers } from 'ethers';
 import { NetworkService } from '../services/network.service';
 import { RewardsService } from '../services/rewards.service';
 import { PointsService } from '../services/points.service';
+import { NotificationService } from '../services/notification.service';
 import User from '../models/User';
 import { contractABI, CONTRACT_ADDRESS, getContractAmountDecimals } from '../services/contract.service';
 import { getLogsViaEtherscan } from '../services/etherscan.service';
@@ -323,6 +324,50 @@ export class NetworkController {
       const { walletAddress } = req.params;
       const payouts = await RewardsService.getPayoutHistory(walletAddress as string);
       sendSuccess(res, { payouts }, 'Leadership payout history retrieved');
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Share entitlement + pool estimate + payout history for the Leadership Bonus card. */
+  static async getLeadershipStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      const status = await RewardsService.getLeadershipStatus(walletAddress as string);
+      sendSuccess(res, status, 'Leadership status retrieved');
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** One-time rank achievement bonus status for the Network Rank Bonus card. */
+  static async getAchievementStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      const status = await RewardsService.getAchievementStatus(walletAddress as string);
+      sendSuccess(res, status, 'Achievement status retrieved');
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async getNotifications(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      const limit = Math.min(Number(req.query.limit) || 50, 100);
+      const data = await NotificationService.listForWallet(walletAddress as string, limit);
+      sendSuccess(res, data, 'Notifications retrieved');
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async markNotificationsRead(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : undefined;
+      const result = await NotificationService.markRead(walletAddress as string, ids);
+      sendSuccess(res, result, 'Notifications marked as read');
     } catch (error) {
       next(error);
     }

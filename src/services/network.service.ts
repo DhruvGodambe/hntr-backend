@@ -235,9 +235,35 @@ export class NetworkService {
     }
 
     if (newRank !== user.rank) {
+        const previousRank = user.rank;
         user.rank = newRank as any;
         await user.save();
-        logger.info(`Rank updated off-chain for ${user.walletAddress}: ${newRank}`);
+        logger.info(`Rank updated off-chain for ${user.walletAddress}: ${previousRank} -> ${newRank}`);
+
+        const { NotificationService } = await import('./notification.service');
+        const { getLeadershipShares } = await import('../constants');
+        const { RewardsService } = await import('./rewards.service');
+        const shares = getLeadershipShares(newRank);
+
+        try {
+          await RewardsService.enqueueAchievementBonuses(user, previousRank, newRank);
+        } catch (enqueueErr: any) {
+          logger.error(
+            `Failed to enqueue achievement bonuses for ${user.username}: ${enqueueErr.message}`,
+          );
+        }
+
+        await NotificationService.createQuiet({
+          walletAddress: user.walletAddress,
+          type: 'RANK_UP',
+          title: `Rank upgraded to ${newRank}`,
+          sub:
+            shares > 0
+              ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool.`
+              : `Keep growing — Hunter rank and above unlock leadership pool shares.`,
+          link: 'VIEW NETWORK',
+          meta: { previousRank, newRank, shares },
+        });
     }
 
     // Rank stays off-chain; purchase/upgrade txs carry a company-wallet signature

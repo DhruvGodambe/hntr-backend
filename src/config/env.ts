@@ -26,6 +26,9 @@ export const ENV = {
   // Private key that controls `leadershipWallet` on-chain - the only wallet that can
   // pay out the monthly leadership pool, since it holds that pool's actual token balance.
   LEADERSHIP_PRIVATE_KEY: process.env.LEADERSHIP_PRIVATE_KEY || '',
+  // Private key that controls `achievementWallet` on-chain - used by the daily cron to
+  // auto-deposit one-time rank achievement bonuses when the wallet is funded enough.
+  ACHIEVEMENT_WALLET_PRIVATE_KEY: process.env.ACHIEVEMENT_WALLET_PRIVATE_KEY || '',
   // Private key that controls `companyWallet` on-chain. Required for the backend to:
   // - sign purchase/upgrade commission-auth payloads (uplines + ranks)
   // - call `getOverdueWallets()` / `withdrawCompanyWallet()` for overdue users

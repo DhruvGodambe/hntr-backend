@@ -41,6 +41,19 @@ export class AdminController {
   }
 
   /**
+   * Manually runs the daily rank-achievement bonus disbursement on demand
+   * (same logic as the 00:30 UTC cron).
+   */
+  static async runAchievementPayout(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const payouts = await RewardsService.disbursePendingAchievementBonuses();
+      sendSuccess(res, { payouts }, `Paid ${payouts.length} achievement bonus(es)`);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Forces a recalculation of leg volumes, team volume, and rank for a user and
    * every upline ancestor. Useful when a purchase/upgrade was processed but a
    * wallet's volume looks stale because an earlier listener tick failed part-way.

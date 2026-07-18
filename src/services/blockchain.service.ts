@@ -7,6 +7,7 @@ import { PointsService } from './points.service';
 import { provider, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals } from './contract.service';
 import { logger } from '../utils/logger';
 import { Tier, CONTRACT_EVENTS, TIER_VOLUMES } from '../constants';
+import { NotificationService } from './notification.service';
 
 const POLL_INTERVAL_MS = 15_000; // Poll every 15 seconds
 const SYNC_KEY = 'blockchain-listener';
@@ -198,6 +199,15 @@ export class BlockchainService {
         logger.error(`Failed to award points for ${type} ${txHash}: ${pointsErr.message}`);
       }
 
+      await NotificationService.createQuiet({
+        walletAddress: user.walletAddress,
+        type: type === 'PURCHASE' ? 'MEMBERSHIP_PURCHASED' : 'MEMBERSHIP_UPGRADED',
+        title: type === 'PURCHASE' ? 'Membership purchased' : 'Membership upgraded',
+        sub: `${tierStr} membership confirmed${oldTier && oldTier !== 'None' ? ` (from ${oldTier})` : ''}.`,
+        link: 'VIEW MEMBERSHIP',
+        meta: { tier: tierStr, oldTier, txHash, type },
+      });
+
       logger.info(`Processed ${type} for user ${user.username}: ${oldTier} -> ${tierStr}. Ancestors updated: ${user.ancestors.length}`);
     } catch (error: any) {
       logger.error('Error processing blockchain event:', error.message);
@@ -263,6 +273,15 @@ export class BlockchainService {
         logger.error(`Failed to award points for commission ${txHash}: ${pointsErr.message}`);
       }
 
+      await NotificationService.createQuiet({
+        walletAddress,
+        type: 'COMMISSION_EARNED',
+        title: 'Referral commission earned',
+        sub: `$${total.toFixed(2)} from level ${level} ($${liquid.toFixed(2)} claimable, $${locked.toFixed(2)} locked).`,
+        link: 'VIEW NETWORK',
+        meta: { amount: total, liquid, locked, level, txHash },
+      });
+
       logger.info(`Stored COMMISSION_EARNED for ${walletAddress}: +$${total.toFixed(2)} (liquid $${liquid.toFixed(2)}, locked $${locked.toFixed(2)})`);
     } catch (error: any) {
       logger.error('Error processing CommissionEarned event:', error.message);
@@ -312,6 +331,14 @@ export class BlockchainService {
         pending.timestamp = new Date();
         await pending.save();
         logger.info(`Promoted PENDING COMMISSION_CLAIM to CONFIRMED for ${txHash}: $${withdrawn.toFixed(2)}`);
+        await NotificationService.createQuiet({
+          walletAddress: normalizedWallet,
+          type: 'COMMISSION_CLAIMED',
+          title: 'Referral commission claimed',
+          sub: `$${withdrawn.toFixed(2)} sent to your wallet.`,
+          link: 'VIEW TRANSACTION',
+          meta: { amount: withdrawn, txHash, token: normalizedToken },
+        });
         return;
       }
 
@@ -323,6 +350,15 @@ export class BlockchainService {
         amount: withdrawn,
         status: 'CONFIRMED',
         timestamp: new Date(),
+      });
+
+      await NotificationService.createQuiet({
+        walletAddress: normalizedWallet,
+        type: 'COMMISSION_CLAIMED',
+        title: 'Referral commission claimed',
+        sub: `$${withdrawn.toFixed(2)} sent to your wallet.`,
+        link: 'VIEW TRANSACTION',
+        meta: { amount: withdrawn, txHash, token: normalizedToken },
       });
 
       logger.info(`Stored COMMISSION_WITHDRAWN for ${walletAddress}: -$${withdrawn.toFixed(2)}`);

@@ -61,3 +61,82 @@ export const CONTRACT_EVENTS = {
   MEMBERSHIP_PURCHASED: 'MembershipPurchased',
   MEMBERSHIP_UPGRADED: 'MembershipUpgraded',
 };
+
+/**
+ * Monthly leadership pool share weights. Only Hunter+ ranks receive shares;
+ * Scout / Tracker / Ranger / None get 0. Pool is split pro-rata by shares.
+ * Must stay in lockstep with RewardsService.calculateMonthlyLeadershipPool.
+ */
+export const LEADERSHIP_SHARES: Record<string, number> = {
+  [Rank.NONE]: 0,
+  [Rank.SCOUT]: 0,
+  [Rank.TRACKER]: 0,
+  [Rank.RANGER]: 0,
+  [Rank.HUNTER]: 1,
+  [Rank.ELITE]: 3,
+  [Rank.MASTER]: 7,
+  [Rank.LEGEND]: 15,
+};
+
+export const LEADERSHIP_ELIGIBLE_RANKS = [
+  Rank.HUNTER,
+  Rank.ELITE,
+  Rank.MASTER,
+  Rank.LEGEND,
+] as const;
+
+export function getLeadershipShares(rank: string | null | undefined): number {
+  if (!rank) return 0;
+  return LEADERSHIP_SHARES[rank] ?? 0;
+}
+
+/**
+ * One-time rank achievement bonuses (PDF §5). Paid from achievementWallet
+ * when it holds enough USDT/USDC. Must stay in lockstep with RewardsService.
+ */
+export const RANK_ACHIEVEMENT_BONUSES: Record<string, number> = {
+  [Rank.SCOUT]: 25,
+  [Rank.TRACKER]: 150,
+  [Rank.RANGER]: 750,
+  [Rank.HUNTER]: 5000,
+  [Rank.ELITE]: 25000,
+  [Rank.MASTER]: 100000,
+  [Rank.LEGEND]: 500000,
+};
+
+/** Ascending ladder used to detect newly crossed ranks on upgrade. */
+export const RANK_LADDER: Rank[] = [
+  Rank.SCOUT,
+  Rank.TRACKER,
+  Rank.RANGER,
+  Rank.HUNTER,
+  Rank.ELITE,
+  Rank.MASTER,
+  Rank.LEGEND,
+];
+
+export function getAchievementBonusAmount(rank: string | null | undefined): number {
+  if (!rank) return 0;
+  return RANK_ACHIEVEMENT_BONUSES[rank] ?? 0;
+}
+
+/**
+ * Ranks newly crossed when moving from previousRank → newRank (exclusive of previous).
+ * E.g. None → Ranger yields [Scout, Tracker, Ranger].
+ */
+export function ranksNewlyAchieved(
+  previousRank: string | null | undefined,
+  newRank: string | null | undefined,
+): Rank[] {
+  if (!newRank || newRank === Rank.NONE) return [];
+  const nextIdx = RANK_LADDER.indexOf(newRank as Rank);
+  if (nextIdx < 0) return [];
+
+  const prevIdx =
+    !previousRank || previousRank === Rank.NONE
+      ? -1
+      : RANK_LADDER.indexOf(previousRank as Rank);
+
+  if (nextIdx <= prevIdx) return [];
+  return RANK_LADDER.slice(prevIdx + 1, nextIdx + 1);
+}

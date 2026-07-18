@@ -12,6 +12,10 @@ router.post('/claim', requireWalletAuth, NetworkController.claimCommissions);
 router.get('/transactions/:walletAddress', NetworkController.getTransactions);
 router.get('/:walletAddress/rewards-summary', NetworkController.getRewardsSummary);
 router.get('/:walletAddress/leadership-payouts', NetworkController.getLeadershipPayouts);
+router.get('/:walletAddress/leadership-status', NetworkController.getLeadershipStatus);
+router.get('/:walletAddress/achievement-status', NetworkController.getAchievementStatus);
+router.get('/:walletAddress/notifications', NetworkController.getNotifications);
+router.post('/:walletAddress/notifications/read', NetworkController.markNotificationsRead);
 router.get('/:walletAddress/points', NetworkController.getPointsSummary);
 router.post('/:walletAddress/points/recalculate', NetworkController.recalculatePoints);
 
