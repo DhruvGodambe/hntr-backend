@@ -12,5 +12,7 @@ router.post('/claim', requireWalletAuth, NetworkController.claimCommissions);
 router.get('/transactions/:walletAddress', NetworkController.getTransactions);
 router.get('/:walletAddress/rewards-summary', NetworkController.getRewardsSummary);
 router.get('/:walletAddress/leadership-payouts', NetworkController.getLeadershipPayouts);
+router.get('/:walletAddress/points', NetworkController.getPointsSummary);
+router.post('/:walletAddress/points/recalculate', NetworkController.recalculatePoints);
 
 export default router;

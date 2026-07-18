@@ -3,10 +3,10 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface ITransaction extends Document {
   txHash?: string;
   walletAddress: string;
-  type: 'PURCHASE' | 'UPGRADE' | 'COMMISSION_CLAIM' | 'COMMISSION_EARNED' | 'COMMISSION_WITHDRAWN';
+  type: 'PURCHASE' | 'UPGRADE' | 'COMMISSION_CLAIM' | 'COMMISSION_EARNED' | 'COMMISSION_WITHDRAWN' | 'COMPANY_WALLET_WITHDRAWN';
   tier?: string;
   token?: string;
-  amount: number; // total for COMMISSION_EARNED, withdrawn amount for COMMISSION_WITHDRAWN
+  amount: number; // total for COMMISSION_EARNED, withdrawn amount for COMMISSION_WITHDRAWN / COMPANY_WALLET_WITHDRAWN
   liquidAmount?: number; // 80% of the commission (claimable part)
   lockedAmount?: number; // 20% of the commission (locked / pool-wallet part)
   level?: number; // referral level for COMMISSION_EARNED (1-12)
@@ -30,11 +30,11 @@ const TransactionSchema: Schema = new Schema({
   },
   type: {
     type: String,
-    enum: ['PURCHASE', 'UPGRADE', 'COMMISSION_CLAIM', 'COMMISSION_EARNED', 'COMMISSION_WITHDRAWN'],
+    enum: ['PURCHASE', 'UPGRADE', 'COMMISSION_CLAIM', 'COMMISSION_EARNED', 'COMMISSION_WITHDRAWN', 'COMPANY_WALLET_WITHDRAWN'],
     required: true,
   },
   tier: {
-    type: String, // e.g., "Scout"
+    type: String, // e.g., "Bronze"
   },
   token: {
     type: String,

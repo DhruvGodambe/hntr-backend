@@ -12,7 +12,6 @@ import authRoutes from './routes/auth.routes';
 import membershipRoutes from './routes/membership.routes';
 import { BlockchainService } from './services/blockchain.service';
 import { initCronJobs } from './jobs/leadership-cron';
-import { startBurnerBalanceMonitor } from './jobs/burner-balance-monitor';
 
 const app = express();
 
@@ -40,9 +39,6 @@ const startServer = async () => {
         if (ENV.NODE_ENV === 'production' && ENV.JWT_SECRET === 'dev-insecure-secret-change-me') {
             logger.error('JWT_SECRET is using the insecure default value in production. Set a strong JWT_SECRET env var.');
         }
-        if (!ENV.PRIVATE_KEY) {
-            logger.error('PRIVATE_KEY is not set. The burner relayer cannot sign purchase/upgrade/claim transactions.');
-        }
 
         await connectDB();
 
@@ -53,7 +49,6 @@ const startServer = async () => {
 
         // Start background cron jobs
         initCronJobs();
-        startBurnerBalanceMonitor();
 
         app.listen(ENV.PORT, () => {
             logger.info(`Server successfully started on port ${ENV.PORT}`);

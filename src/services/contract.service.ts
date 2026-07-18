@@ -21,32 +21,41 @@ export const contractABI = [
   'function leadershipWallet() view returns (address)',
   'function achievementWallet() view returns (address)',
   'function poolWallet() view returns (address)',
-  'function burnerWallet() view returns (address)',
+  'function companyWallet() view returns (address)',
   'function owner() view returns (address)',
   'function users(address) view returns (uint8 tier, uint256 joinedAt)',
+  'function allUsers(uint256) view returns (address)',
   'function tierPrices(uint8) view returns (uint256)',
-  'function tierMaxLevels(uint8) view returns (uint8)',
   'function withdrawableCommissions(address, address) view returns (uint256)',
   'function lockedCommissions(address, address) view returns (uint256)',
+  'function lastClaimedAt(address, address) view returns (uint256)',
   'function levelPercentages(uint256) view returns (uint256)',
+  'function tierRequiredForLevel(uint256) view returns (uint8)',
+  'function rankRequiredForLevel(uint256) view returns (uint8)',
+  'function CLAIM_GRACE_PERIOD() view returns (uint256)',
+  'function PURCHASE_OP() view returns (bytes32)',
+  'function UPGRADE_OP() view returns (bytes32)',
   'function getUser(address user) view returns (tuple(uint8 tier, uint256 joinedAt))',
+  'function getOverdueWallets(address token) view returns (address[])',
 
   // --- Owner admin ---
   'function setWallets(address _treasury, address _leadership, address _achievement, address _poolWallet)',
-  'function setBurnerWallet(address _burnerWallet)',
+  'function setCompanyWallet(address _companyWallet)',
 
-  // --- Burner-relayed writes ---
-  'function purchaseMembership(address user, uint8 tier, address[] uplines, address token)',
-  'function upgradeMembership(address user, uint8 newTier, address[] uplines, address token)',
+  // --- User writes (backend-signed uplines + ranks) ---
+  'function purchaseMembership(address user, uint8 tier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature)',
+  'function upgradeMembership(address user, uint8 newTier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature)',
   'function withdrawCommissions(address user, address token)',
+  'function withdrawCompanyWallet(address user, address token)',
 
   // --- Events ---
   'event MembershipPurchased(address indexed user, uint8 tier, uint256 amount, address token)',
   'event MembershipUpgraded(address indexed user, uint8 oldTier, uint8 newTier, uint256 amountPaid, address token)',
   'event CommissionEarned(address indexed user, uint256 liquidAmount, uint256 lockedAmount, uint8 level, address token)',
   'event CommissionWithdrawn(address indexed user, uint256 amount, address token)',
+  'event CompanyWalletWithdrawn(address indexed user, address indexed token, uint256 amount, address indexed companyWallet)',
   'event WalletsUpdated(address treasury, address leadership, address achievement, address poolWallet)',
-  'event BurnerWalletUpdated(address burnerWallet)',
+  'event CompanyWalletUpdated(address companyWallet)',
 
   // --- Errors (SafeERC20) ---
   'error SafeERC20FailedOperation(address token)',
@@ -62,50 +71,25 @@ export const erc20ABI = [
 
 export const provider = new ethers.JsonRpcProvider(RPC_URL);
 
-if (!ENV.PRIVATE_KEY) {
-  logger.error('PRIVATE_KEY is not set - the burner relayer cannot sign any transaction (purchase/upgrade/claim will fail).');
-}
-
-// Burner wallet used to relay purchaseMembership / upgradeMembership / withdrawCommissions.
-export const burnerWallet = new ethers.Wallet(
-  ENV.PRIVATE_KEY || '0x0000000000000000000000000000000000000000000000000000000000000001',
-  provider,
-);
-
 export const hntrContract = new ethers.Contract(CONTRACT_ADDRESS, contractABI, provider);
-export const hntrContractWithSigner = hntrContract.connect(burnerWallet);
+
+// Optional signer for the on-chain company wallet. Only available when
+// COMPANY_WALLET_PRIVATE_KEY is configured; required for:
+// - signing purchase/upgrade commission-auth payloads (uplines + ranks)
+// - overdue-wallet queries and company-withdrawal transactions
+export const companyWallet = ENV.COMPANY_WALLET_PRIVATE_KEY
+  ? new ethers.Wallet(ENV.COMPANY_WALLET_PRIVATE_KEY, provider)
+  : null;
+
+/** Commission-auth signature lifetime. Anchored to chain time (not server clock). */
+export const SIGNATURE_TTL_SECONDS = 60 * 60; // 1 hour
+
+export const hntrContractWithCompanySigner = companyWallet
+  ? hntrContract.connect(companyWallet)
+  : null;
 
 export function getErc20(tokenAddress: string) {
   return new ethers.Contract(tokenAddress, erc20ABI, provider);
-}
-
-/**
- * Serializes every burner-signed transaction (purchase/upgrade/claim) through a single
- * promise chain so concurrent requests can never collide on the burner wallet's nonce.
- * A single Node process handles all writes here; if this service is ever scaled
- * horizontally, replace this with a distributed lock/queue (e.g. Redis) around the
- * same burner wallet key.
- */
-class BurnerTxQueue {
-  private queue: Promise<unknown> = Promise.resolve();
-
-  enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn);
-    // Swallow errors here so one failed tx doesn't poison the rest of the queue.
-    this.queue = run.catch(() => undefined);
-    return run;
-  }
-}
-
-export const burnerTxQueue = new BurnerTxQueue();
-
-export async function getBurnerBalance(): Promise<bigint> {
-  return provider.getBalance(burnerWallet.address);
-}
-
-export async function checkBurnerBalanceHealthy(): Promise<{ healthy: boolean; balance: bigint }> {
-  const balance = await getBurnerBalance();
-  return { healthy: balance >= ENV.MIN_BURNER_BALANCE_WEI, balance };
 }
 
 let cachedAmountDecimals: number | null = null;
@@ -113,7 +97,7 @@ let cachedAmountDecimals: number | null = null;
 /**
  * The HNTRMembership contract stores/emit amounts in its own internal decimal scale,
  * which may differ from the ERC20 token decimals (e.g. 6 vs 18). We detect it once by
- * comparing the raw Scout tier price to the known $50 price so commission balances,
+ * comparing the raw Bronze tier price to the known $50 price so commission balances,
  * event amounts, and transfer amounts all use the same scale.
  */
 export async function getContractAmountDecimals(): Promise<number> {
@@ -122,9 +106,9 @@ export async function getContractAmountDecimals(): Promise<number> {
   }
 
   try {
-    const scoutIndex = 1; // Scout tier
-    const rawPrice = await hntrContract.tierPrices(scoutIndex);
-    const expectedPrice = TIER_VOLUMES[Tier.SCOUT]; // 50
+    const bronzeIndex = 1; // Bronze tier
+    const rawPrice = await hntrContract.tierPrices(bronzeIndex);
+    const expectedPrice = TIER_VOLUMES[Tier.BRONZE]; // 50
     const rawPerDollar = Number(rawPrice) / expectedPrice;
     const decimals = Math.round(Math.log10(rawPerDollar));
 

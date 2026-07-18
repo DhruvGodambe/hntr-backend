@@ -2,12 +2,22 @@ import { ethers } from 'ethers';
 import User from '../models/User';
 import Transaction from '../models/Transaction';
 import { NetworkService } from './network.service';
-import { hntrContract, hntrContractWithSigner, burnerTxQueue, getErc20, CONTRACT_ADDRESS } from './contract.service';
+import {
+  hntrContract,
+  getErc20,
+  CONTRACT_ADDRESS,
+  companyWallet,
+  SIGNATURE_TTL_SECONDS,
+  provider,
+} from './contract.service';
 import { Tier, TIER_VOLUMES } from '../constants';
 import { logger } from '../utils/logger';
 import { findActivePendingRelay } from '../utils/staleTransactions';
 
-const TIER_ORDER: Tier[] = [Tier.NONE, Tier.SCOUT, Tier.TRACKER, Tier.RANGER, Tier.HUNTER, Tier.APEX];
+const TIER_ORDER: Tier[] = [Tier.NONE, Tier.BRONZE, Tier.SILVER, Tier.GOLD, Tier.PLATINUM, Tier.DIAMOND];
+
+const PURCHASE_OP = ethers.id('PURCHASE');
+const UPGRADE_OP = ethers.id('UPGRADE');
 
 export class MembershipError extends Error {
   code: string;
@@ -55,6 +65,22 @@ export interface MembershipQuote {
   balanceRaw: string;
   needsApproval: boolean;
   insufficientBalance: boolean;
+}
+
+export interface PreparedMembershipTx {
+  operation: 'PURCHASE' | 'UPGRADE';
+  walletAddress: string;
+  tierIndex: number;
+  uplines: string[];
+  ranks: number[];
+  tokenAddress: string;
+  tokenSymbol: string;
+  amountDueRaw: string;
+  contractAddress: string;
+  deadline: number;
+  signature: string;
+  pendingTransactionId: string;
+  status: 'PENDING';
 }
 
 export class MembershipService {
@@ -110,15 +136,96 @@ export class MembershipService {
     }
   }
 
-  private static async getUplinesForWallet(walletAddress: string): Promise<string[]> {
+  private static async getUplinesWithRanksForWallet(walletAddress: string): Promise<{ uplines: string[]; ranks: number[] }> {
     const user = await User.findOne({ walletAddress: walletAddress.toLowerCase() });
     if (!user) {
       throw new MembershipError('USER_NOT_REGISTERED', 'No registered profile for this wallet. Please complete sign up first.', 404);
     }
-    return NetworkService.getUplines(user.username);
+    return NetworkService.getUplinesWithRanks(user.username);
   }
 
-  static async purchase(walletAddress: string, tierName: string, tokenSymbol: string): Promise<{ txHash: string }> {
+  /**
+   * Signs the commission-auth payload the contract verifies on purchase/upgrade.
+   * Must match HNTRMembership._verifyCommissionAuth hashing exactly.
+   */
+  private static async signCommissionAuth(params: {
+    user: string;
+    tierIndex: number;
+    uplines: string[];
+    ranks: number[];
+    tokenAddress: string;
+    deadline: number;
+    operation: 'PURCHASE' | 'UPGRADE';
+  }): Promise<string> {
+    if (!companyWallet) {
+      throw new MembershipError(
+        'COMPANY_WALLET_NOT_CONFIGURED',
+        'Server cannot authorize membership purchases (COMPANY_WALLET_PRIVATE_KEY missing).',
+        503,
+      );
+    }
+
+    const network = await provider.getNetwork();
+    const structHash = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ['address', 'uint8', 'address[]', 'uint8[]', 'address', 'uint256', 'uint256', 'address', 'bytes32'],
+        [
+          ethers.getAddress(params.user),
+          params.tierIndex,
+          params.uplines.map((a) => ethers.getAddress(a)),
+          params.ranks,
+          ethers.getAddress(params.tokenAddress),
+          params.deadline,
+          network.chainId,
+          ethers.getAddress(CONTRACT_ADDRESS),
+          params.operation === 'PURCHASE' ? PURCHASE_OP : UPGRADE_OP,
+        ],
+      ),
+    );
+
+    return companyWallet.signMessage(ethers.getBytes(structHash));
+  }
+
+  private static async prepareAuth(
+    walletAddress: string,
+    tierIndex: number,
+    tokenAddress: string,
+    operation: 'PURCHASE' | 'UPGRADE',
+  ) {
+    const { uplines, ranks } = await this.getUplinesWithRanksForWallet(walletAddress);
+
+    // Anchor deadline to the chain clock so a skewed server clock cannot make
+    // fresh signatures look already-expired during eth_estimateGas.
+    const latest = await provider.getBlock('latest');
+    if (!latest) {
+      throw new MembershipError('RPC_ERROR', 'Could not read latest block timestamp from RPC.', 503);
+    }
+    const deadline = Number(latest.timestamp) + SIGNATURE_TTL_SECONDS;
+
+    const checksumUser = ethers.getAddress(walletAddress);
+    const checksumUplines = uplines.map((a) => ethers.getAddress(a));
+    const checksumToken = ethers.getAddress(tokenAddress);
+
+    const signature = await this.signCommissionAuth({
+      user: checksumUser,
+      tierIndex,
+      uplines: checksumUplines,
+      ranks,
+      tokenAddress: checksumToken,
+      deadline,
+      operation,
+    });
+    return {
+      walletAddress: checksumUser,
+      uplines: checksumUplines,
+      ranks,
+      tokenAddress: checksumToken,
+      deadline,
+      signature,
+    };
+  }
+
+  static async purchase(walletAddress: string, tierName: string, tokenSymbol: string): Promise<PreparedMembershipTx> {
     const address = walletAddress.toLowerCase();
     const tierIndex = tierNameToIndex(tierName);
 
@@ -136,7 +243,7 @@ export class MembershipService {
     }
 
     await this.assertNoPendingRelay(address, 'PURCHASE');
-    const uplines = await this.getUplinesForWallet(address);
+    const auth = await this.prepareAuth(address, tierIndex, quote.tokenAddress, 'PURCHASE');
 
     const txnRecord = await Transaction.create({
       walletAddress: address,
@@ -147,28 +254,28 @@ export class MembershipService {
       status: 'PENDING',
     });
 
-    try {
-      const txHash = await burnerTxQueue.enqueue(async () => {
-        const tx = await (hntrContractWithSigner as any).purchaseMembership(address, tierIndex, uplines, quote.tokenAddress);
-        await tx.wait();
-        return tx.hash as string;
-      });
+    logger.info(
+      `Purchase prepared for ${auth.walletAddress}: tier=${tierName}, token=${quote.tokenSymbol}, amount=${quote.amountDueRaw}, deadline=${auth.deadline}, uplines=${auth.uplines.length}`,
+    );
 
-      txnRecord.txHash = txHash;
-      txnRecord.status = 'CONFIRMED';
-      await txnRecord.save();
-
-      return { txHash };
-    } catch (error: any) {
-      logger.error(`Purchase relay failed for ${address}:`, error);
-      txnRecord.status = 'FAILED';
-      txnRecord.errorMessage = error?.shortMessage || error?.message || 'Unknown error';
-      await txnRecord.save();
-      throw new MembershipError('RELAY_FAILED', 'The relay transaction failed on-chain. Your funds were not moved. Please try again.', 502);
-    }
+    return {
+      operation: 'PURCHASE',
+      walletAddress: auth.walletAddress,
+      tierIndex,
+      uplines: auth.uplines,
+      ranks: auth.ranks,
+      tokenAddress: auth.tokenAddress,
+      tokenSymbol: quote.tokenSymbol,
+      amountDueRaw: quote.amountDueRaw,
+      contractAddress: ethers.getAddress(CONTRACT_ADDRESS),
+      deadline: auth.deadline,
+      signature: auth.signature,
+      pendingTransactionId: txnRecord._id.toString(),
+      status: 'PENDING',
+    };
   }
 
-  static async upgrade(walletAddress: string, newTierName: string, tokenSymbol: string): Promise<{ txHash: string }> {
+  static async upgrade(walletAddress: string, newTierName: string, tokenSymbol: string): Promise<PreparedMembershipTx> {
     const address = walletAddress.toLowerCase();
     const newTierIndex = tierNameToIndex(newTierName);
 
@@ -190,7 +297,7 @@ export class MembershipService {
     }
 
     await this.assertNoPendingRelay(address, 'UPGRADE');
-    const uplines = await this.getUplinesForWallet(address);
+    const auth = await this.prepareAuth(address, newTierIndex, quote.tokenAddress, 'UPGRADE');
 
     const txnRecord = await Transaction.create({
       walletAddress: address,
@@ -201,24 +308,24 @@ export class MembershipService {
       status: 'PENDING',
     });
 
-    try {
-      const txHash = await burnerTxQueue.enqueue(async () => {
-        const tx = await (hntrContractWithSigner as any).upgradeMembership(address, newTierIndex, uplines, quote.tokenAddress);
-        await tx.wait();
-        return tx.hash as string;
-      });
+    logger.info(
+      `Upgrade prepared for ${auth.walletAddress}: tier=${newTierName}, token=${quote.tokenSymbol}, amount=${quote.amountDueRaw}, deadline=${auth.deadline}, uplines=${auth.uplines.length}`,
+    );
 
-      txnRecord.txHash = txHash;
-      txnRecord.status = 'CONFIRMED';
-      await txnRecord.save();
-
-      return { txHash };
-    } catch (error: any) {
-      logger.error(`Upgrade relay failed for ${address}:`, error);
-      txnRecord.status = 'FAILED';
-      txnRecord.errorMessage = error?.shortMessage || error?.message || 'Unknown error';
-      await txnRecord.save();
-      throw new MembershipError('RELAY_FAILED', 'The relay transaction failed on-chain. Your funds were not moved. Please try again.', 502);
-    }
+    return {
+      operation: 'UPGRADE',
+      walletAddress: auth.walletAddress,
+      tierIndex: newTierIndex,
+      uplines: auth.uplines,
+      ranks: auth.ranks,
+      tokenAddress: auth.tokenAddress,
+      tokenSymbol: quote.tokenSymbol,
+      amountDueRaw: quote.amountDueRaw,
+      contractAddress: ethers.getAddress(CONTRACT_ADDRESS),
+      deadline: auth.deadline,
+      signature: auth.signature,
+      pendingTransactionId: txnRecord._id.toString(),
+      status: 'PENDING',
+    };
   }
 }

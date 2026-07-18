@@ -8,10 +8,11 @@ export interface IUser extends Document {
   sponsorUsername?: string | null;
   ancestors: string[];
   directDownline: string[];
-  tier: 'None' | 'Scout' | 'Tracker' | 'Ranger' | 'Hunter' | 'Apex';
+  tier: 'None' | 'Bronze' | 'Silver' | 'Gold' | 'Platinum' | 'Diamond';
   rank: 'None' | 'Scout' | 'Tracker' | 'Ranger' | 'Hunter' | 'Elite Hunter' | 'Master Hunter' | 'Legend Hunter';
   teamVolume: number;
   legVolumes: Map<string, number>;
+  hntrPoints: number;
   joinedAt: Date;
 }
 
@@ -49,7 +50,7 @@ const UserSchema: Schema = new Schema({
   },
   tier: {
     type: String,
-    enum: ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Apex'],
+    enum: ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'],
     default: 'None',
   },
   rank: {
@@ -65,6 +66,10 @@ const UserSchema: Schema = new Schema({
     type: Map,
     of: Number,
     default: {},
+  },
+  hntrPoints: {
+    type: Number,
+    default: 0,
   },
   joinedAt: {
     type: Date,

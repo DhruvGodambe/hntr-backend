@@ -7,21 +7,21 @@ import path from 'path';
  * - Treasury Wallet
  * - Leadership Wallet
  * - Achievement Wallet
- * - Pool Wallet
- * - Burner Wallet (Relayer)
+ * - Pool Wallet (receives the 20% locked portion of commissions)
+ * - Company Wallet (can withdraw overdue commissions on behalf of users)
  *
  * Make sure to securely store the private keys outputted by this function!
  * Running this script also writes a ready-to-use .env block to
  * `generated-wallets.env` (gitignored) so the addresses/keys can be copied
  * straight into `hntr/.env` (for the deploy script) and `hntr-backend/.env`
- * (for the burner relayer) without retyping anything.
+ * (for the company wallet operations) without retyping anything.
  */
 export function generateProtocolWallets() {
   const treasuryWallet = Wallet.createRandom();
   const leadershipWallet = Wallet.createRandom();
   const achievementWallet = Wallet.createRandom();
   const poolWallet = Wallet.createRandom();
-  const burnerWallet = Wallet.createRandom();
+  const companyWallet = Wallet.createRandom();
 
   const wallets = {
     treasury: {
@@ -40,9 +40,9 @@ export function generateProtocolWallets() {
       address: poolWallet.address,
       privateKey: poolWallet.privateKey,
     },
-    burner: {
-      address: burnerWallet.address,
-      privateKey: burnerWallet.privateKey,
+    company: {
+      address: companyWallet.address,
+      privateKey: companyWallet.privateKey,
     },
   };
 
@@ -66,9 +66,9 @@ export function generateProtocolWallets() {
   console.log(`Address:     ${wallets.pool.address}`);
   console.log(`Private Key: ${wallets.pool.privateKey}`);
 
-  console.log('\n5. BURNER WALLET (Relayer)');
-  console.log(`Address:     ${wallets.burner.address}`);
-  console.log(`Private Key: ${wallets.burner.privateKey}`);
+  console.log('\n5. COMPANY WALLET');
+  console.log(`Address:     ${wallets.company.address}`);
+  console.log(`Private Key: ${wallets.company.privateKey}`);
 
   const outputPath = path.resolve(__dirname, '../../generated-wallets.env');
   const envBlock = [
@@ -79,10 +79,10 @@ export function generateProtocolWallets() {
     `LEADERSHIP_WALLET=${wallets.leadership.address}`,
     `ACHIEVEMENT_WALLET=${wallets.achievement.address}`,
     `POOL_WALLET=${wallets.pool.address}`,
-    `BURNER_WALLET=${wallets.burner.address}`,
+    `COMPANY_WALLET=${wallets.company.address}`,
     '',
-    '# --- Paste this line into hntr-backend/.env so the backend relayer can sign for the burner wallet ---',
-    `PRIVATE_KEY=${wallets.burner.privateKey}`,
+    '# --- Paste this line into hntr-backend/.env so the backend can sign commission auth + company withdrawals ---',
+    `COMPANY_WALLET_PRIVATE_KEY=${wallets.company.privateKey}`,
     '',
     '# --- Keep the remaining private keys somewhere secure (e.g. a secrets manager). ---',
     '# --- They are NOT needed by the backend at runtime, only during initial setup / payouts. ---',
@@ -98,8 +98,9 @@ export function generateProtocolWallets() {
   console.log('\n==========================================');
   console.log(`Wrote ready-to-paste .env block to: ${outputPath}`);
   console.log('IMPORTANT: Save these private keys securely, then delete generated-wallets.env.');
-  console.log('You will need the ADDRESSES to configure the smart contract (setWallets / setBurnerWallet).');
-  console.log('You will need the BURNER PRIVATE KEY in hntr-backend/.env as PRIVATE_KEY.');
+  console.log('You will need the ADDRESSES to configure the smart contract (setWallets / setCompanyWallet).');
+  console.log('You will need the COMPANY WALLET PRIVATE KEY in hntr-backend/.env as COMPANY_WALLET_PRIVATE_KEY');
+  console.log('(used to sign purchase/upgrade uplines+ranks, and for overdue company withdrawals).');
 
   return wallets;
 }

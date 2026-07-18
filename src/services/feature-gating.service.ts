@@ -3,7 +3,7 @@ import { hntrContract } from './contract.service';
 export class FeatureGatingService {
   /**
    * Helper to fetch the user's on-chain tier directly from the smart contract.
-   * Tier 0 = NONE, 1 = SCOUT, 2 = TRACKER, 3 = RANGER, 4 = HUNTER, 5 = APEX
+   * Tier 0 = NONE, 1 = BRONZE, 2 = SILVER, 3 = GOLD, 4 = PLATINUM, 5 = DIAMOND
    */
   static async getOnChainTier(walletAddress: string): Promise<number> {
     try {
@@ -22,22 +22,22 @@ export class FeatureGatingService {
    */
   static async canAccessEducation(walletAddress: string): Promise<boolean> {
     const tier = await this.getOnChainTier(walletAddress);
-    return tier >= 1; // Scout and above
+    return tier >= 1; // Bronze and above
   }
 
   /**
-   * Unlocks the Tailor OTC Desk (Requires Hunter or Apex).
+   * Unlocks the Tailor OTC Desk (Requires Platinum or Diamond).
    */
   static async canAccessOTC(walletAddress: string): Promise<boolean> {
     const tier = await this.getOnChainTier(walletAddress);
-    return tier >= 4; // Hunter and above
+    return tier >= 4; // Platinum and above
   }
 
   /**
-   * Unlocks the NFT Lending Platform (Requires Hunter or Apex).
+   * Unlocks the NFT Lending Platform (Requires Platinum or Diamond).
    */
   static async canAccessLending(walletAddress: string): Promise<boolean> {
     const tier = await this.getOnChainTier(walletAddress);
-    return tier >= 4; // Hunter and above
+    return tier >= 4; // Platinum and above
   }
 }

@@ -35,11 +35,7 @@ export class MembershipController {
         return;
       }
       const result = await MembershipService.purchase(walletAddress, tier, token);
-      if (!result?.txHash) {
-        sendError(res, 'Membership purchase could not be completed. Please try again.', 500, { code: 'PURCHASE_FAILED' });
-        return;
-      }
-      sendSuccess(res, result, 'Membership purchased successfully');
+      sendSuccess(res, result, 'Purchase transaction prepared; submit it from your wallet');
     } catch (error) {
       handleMembershipError(res, error, next);
     }
@@ -54,11 +50,7 @@ export class MembershipController {
         return;
       }
       const result = await MembershipService.upgrade(walletAddress, tier, token);
-      if (!result?.txHash) {
-        sendError(res, 'Membership upgrade could not be completed. Please try again.', 500, { code: 'PURCHASE_FAILED' });
-        return;
-      }
-      sendSuccess(res, result, 'Membership upgraded successfully');
+      sendSuccess(res, result, 'Upgrade transaction prepared; submit it from your wallet');
     } catch (error) {
       handleMembershipError(res, error, next);
     }

@@ -24,10 +24,13 @@ async function runFullCommissionFlow() {
   const mockUSDTAddress = "0xEC4ca582619E79FdedC4bc23948d7d7856b6750e";
 
   const TREASURY = "0x284E6b41dB482d9edE9449Bbda1198d95464B23D";
-  
+
   // Dynamically generate a Leadership Wallet so we can test the cron job payouts
   const leadershipWallet = ethers.Wallet.createRandom().connect(provider);
   const LEADERSHIP = leadershipWallet.address;
+
+  // Pool wallet receives the locked portion of commissions.
+  const POOL_WALLET = process.env.POOL_WALLET || ethers.Wallet.createRandom().address;
   
   const ACHIEVEMENT = "0x3D6D1BffaDd3a71baDdC3E6468ed144f0F4B975b";
 
@@ -77,9 +80,9 @@ async function runFullCommissionFlow() {
   console.log("\n--- CONFIGURING PROTOCOL WALLETS ---");
   const liveHntrContract = hntrContract.connect(ownerWallet) as ethers.Contract;
   try {
-    const setTx = await liveHntrContract.setWallets(TREASURY, LEADERSHIP, ACHIEVEMENT);
+    const setTx = await liveHntrContract.setWallets(TREASURY, LEADERSHIP, ACHIEVEMENT, POOL_WALLET);
     await setTx.wait();
-    console.log(`✅ Protocol Wallets successfully configured!`);
+    console.log(`✅ Protocol Wallets successfully configured! (pool: ${POOL_WALLET})`);
   } catch (e: any) {
     console.log(`⚠️ setWallets failed or already set.`);
   }

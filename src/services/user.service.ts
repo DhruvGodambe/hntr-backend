@@ -56,7 +56,7 @@ export class UserService {
       const onChainData = await hntrContract.getUser(user.walletAddress);
       const tierIndex = Number(onChainData[0]);
       
-      const tierLevels = [Tier.NONE, Tier.SCOUT, Tier.TRACKER, Tier.RANGER, Tier.HUNTER, Tier.APEX];
+      const tierLevels = [Tier.NONE, Tier.BRONZE, Tier.SILVER, Tier.GOLD, Tier.PLATINUM, Tier.DIAMOND];
       const onchainTier = tierLevels[tierIndex] || Tier.NONE;
 
       if (user.tier !== onchainTier) {

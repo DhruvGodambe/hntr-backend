@@ -2,15 +2,16 @@ import { Request, Response, NextFunction } from 'express';
 import { ethers } from 'ethers';
 import { NetworkService } from '../services/network.service';
 import { RewardsService } from '../services/rewards.service';
+import { PointsService } from '../services/points.service';
 import User from '../models/User';
-import { hntrContractWithSigner, burnerTxQueue, contractABI, CONTRACT_ADDRESS, getContractAmountDecimals } from '../services/contract.service';
+import { contractABI, CONTRACT_ADDRESS, getContractAmountDecimals } from '../services/contract.service';
 import { getLogsViaEtherscan } from '../services/etherscan.service';
 import { ENV } from '../config/env';
 import Transaction from '../models/Transaction';
 import { findActivePendingRelay } from '../utils/staleTransactions';
 import { sendSuccess, sendError } from '../utils/response';
 
-const TIER_NAMES = ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Apex'];
+const TIER_NAMES = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'];
 
 export class NetworkController {
   static async getUplines(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -52,8 +53,8 @@ export class NetworkController {
   static async claimCommissions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       // walletAddress comes from the authenticated session (requireWalletAuth), never
-      // from the request body - otherwise anyone could make the burner relay a claim
-      // "on behalf of" an arbitrary address, burning the burner's gas for free.
+      // from the request body. The user signs and submits withdrawCommissions() themselves
+      // and pays the gas; the backend only prepares the call data and tracks it via events.
       const walletAddress = req.walletAddress!;
       const { token } = req.body;
 
@@ -76,24 +77,18 @@ export class NetworkController {
         status: 'PENDING',
       });
 
-      try {
-        const txHash = await burnerTxQueue.enqueue(async () => {
-          const tx = await (hntrContractWithSigner as any).withdrawCommissions(walletAddress, token);
-          await tx.wait();
-          return tx.hash as string;
-        });
-
-        txnRecord.txHash = txHash;
-        txnRecord.status = 'CONFIRMED';
-        await txnRecord.save();
-
-        sendSuccess(res, { txHash }, 'Commissions claimed successfully');
-      } catch (error: any) {
-        txnRecord.status = 'FAILED';
-        txnRecord.errorMessage = error?.shortMessage || error?.message || 'Unknown error';
-        await txnRecord.save();
-        throw error;
-      }
+      sendSuccess(
+        res,
+        {
+          operation: 'COMMISSION_CLAIM',
+          walletAddress: walletAddress.toLowerCase(),
+          tokenAddress: token,
+          contractAddress: CONTRACT_ADDRESS,
+          pendingTransactionId: txnRecord._id.toString(),
+          status: 'PENDING',
+        },
+        'Commission claim prepared; submit withdrawCommissions() from your wallet',
+      );
     } catch (error) {
       next(error);
     }
@@ -220,30 +215,83 @@ export class NetworkController {
               amount: amount(record.amount),
               token: record.token,
               tier: record.tier,
+              status: record.status,
             };
           default:
             return { ...base, amount: amount(record.amount), token: record.token };
         }
       });
 
-      // Merge chain + DB records, deduplicating by txHash + type + level (for earned)
-      // and prefer the on-chain record when available because it carries blockNumber.
-      const seen = new Set<string>();
-      const merged: any[] = [];
+      // Merge chain + DB records. Normalize aliased types so one purchase does not
+      // appear three times (Etherscan MembershipPurchased + DB PURCHASE + PENDING).
+      const isClaimType = (type: string) =>
+        type === 'COMMISSION_CLAIM' || type === 'COMMISSION_WITHDRAWN' || type === 'CommissionWithdrawn';
 
-      const addToMerged = (item: any) => {
-        const key = item.level !== undefined
-          ? `${item.txHash || 'pending'}-${item.type}-${item.level}`
-          : `${item.txHash || 'pending'}-${item.type}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        merged.push(item);
+      const normalizeType = (type: string) => {
+        if (type === 'MembershipPurchased' || type === 'PURCHASE') return 'PURCHASE';
+        if (type === 'MembershipUpgraded' || type === 'UPGRADE') return 'UPGRADE';
+        if (isClaimType(type)) return 'CLAIM';
+        if (type === 'CommissionEarned' || type === 'COMMISSION_EARNED') return 'COMMISSION_EARNED';
+        return type;
       };
 
+      const merged = new Map<string, any>();
+
+      const addToMerged = (item: any) => {
+        const normalized = normalizeType(item.type);
+
+        // Never surface hash-less prepare stubs (purchase / upgrade / claim) once any
+        // confirmed on-chain counterpart exists — those show up as "$0 Pending".
+        if (!item.txHash && (normalized === 'PURCHASE' || normalized === 'UPGRADE' || normalized === 'CLAIM')) {
+          for (const existing of merged.values()) {
+            if (normalizeType(existing.type) === normalized && existing.txHash) {
+              return;
+            }
+          }
+          // Also hide abandoned $0 claim prepares even if no other claim is loaded yet.
+          if (normalized === 'CLAIM' && (item.status === 'PENDING' || item.status === 'FAILED') && Number(item.amount || 0) === 0) {
+            return;
+          }
+        }
+
+        const key = item.txHash && normalized === 'CLAIM'
+          ? `${item.txHash}-claim`
+          : item.level !== undefined
+            ? `${item.txHash || 'pending'}-${normalized}-${item.level}`
+            : `${item.txHash || 'pending'}-${normalized}`;
+
+        const existing = merged.get(key);
+        if (!existing) {
+          merged.set(key, item);
+          return;
+        }
+
+        // Prefer a confirmed claim with a hash over a PENDING prepare stub.
+        if (normalized === 'CLAIM') {
+          const itemIsPendingStub = !item.txHash || item.status === 'PENDING';
+          const existingIsPendingStub = !existing.txHash || existing.status === 'PENDING';
+          if (itemIsPendingStub && !existingIsPendingStub) return;
+          if (!itemIsPendingStub && existingIsPendingStub) {
+            merged.set(key, item);
+            return;
+          }
+          if (item.type === 'COMMISSION_CLAIM' && item.txHash) {
+            merged.set(key, item);
+            return;
+          }
+        }
+
+        // Prefer the entry that already has a txHash / blockNumber.
+        if (!existing.txHash && item.txHash) {
+          merged.set(key, item);
+        }
+      };
+
+      // Chain first (has block timestamps), then DB (fills gaps + pending/status).
       chainTransactions.forEach(addToMerged);
       dbTransactions.forEach(addToMerged);
 
-      const transactions = merged
+      const transactions = Array.from(merged.values())
         .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
         .slice(0, limit);
 
@@ -275,6 +323,27 @@ export class NetworkController {
       const { walletAddress } = req.params;
       const payouts = await RewardsService.getPayoutHistory(walletAddress as string);
       sendSuccess(res, { payouts }, 'Leadership payout history retrieved');
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async getPointsSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const summary = await PointsService.getPointsSummary(walletAddress as string, limit);
+      sendSuccess(res, summary, 'Points summary retrieved');
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async recalculatePoints(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      const points = await PointsService.recalculatePoints(walletAddress as string);
+      sendSuccess(res, { hntrPoints: points }, 'Points recalculated');
     } catch (error) {
       next(error);
     }

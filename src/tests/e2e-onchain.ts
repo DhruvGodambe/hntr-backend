@@ -31,6 +31,7 @@ async function runOnChainE2E() {
   const deployer = await provider.getSigner(signers[0].address);
   const user1Signer = await provider.getSigner(signers[1].address);
   const user2Signer = await provider.getSigner(signers[2].address);
+  const poolWalletSigner = await provider.getSigner(signers[4].address);
   const genesisSigner = await provider.getSigner(signers[9].address);
 
   console.log(`✅ Connected to Local Anvil Node at ${RPC_URL}`);
@@ -71,8 +72,13 @@ async function runOnChainE2E() {
   const contractAddress = await hntrContract.getAddress();
   console.log(`✅ HNTRMembership deployed at: ${contractAddress}`);
 
-  // Set the 3 wallets (using deployer for all 3 for simplicity)
-  await (hntrContract as any).setWallets(deployer.address, deployer.address, deployer.address);
+  // Set the 4 wallets (using deployer for treasury/leadership/achievement and a dedicated signer for pool)
+  await (hntrContract as any).setWallets(
+    deployer.address,
+    deployer.address,
+    deployer.address,
+    poolWalletSigner.address,
+  );
   console.log(`✅ Wallets configured on-chain.`);
 
   // 4. Start Backend Blockchain Listener
@@ -113,7 +119,7 @@ async function runOnChainE2E() {
   });
 
   // Mint USDC & Approve
-  const cost = ethers.parseUnits("5000", 6); // $5000 for Hunter
+  const cost = ethers.parseUnits("5000", 6); // enough for Platinum ($1,500)
   await (mockUSDC as any).mint(user1Signer.address, cost);
   
   const usdcAsUser1 = new ethers.Contract(usdcAddress, mockJson.abi, user1Signer);
@@ -123,10 +129,9 @@ async function runOnChainE2E() {
   // Execute Web3 Purchase!
   console.log(`🚀 Sending REAL purchase tx to Anvil...`);
   const hntrAsUser1 = new ethers.Contract(contractAddress, hntrJson.abi, user1Signer);
-  
-  // purchaseMembership(uint8 tier, address[] calldata _uplines, address token)
-  // Tier 4 = Hunter
-  const tx = await hntrAsUser1.purchaseMembership(4, [genesisSigner.address], usdcAddress);
+
+  // Tier 4 = Platinum
+  const tx = await hntrAsUser1.purchaseMembership(user1Signer.address, 4, [genesisSigner.address], usdcAddress);
   await tx.wait();
   console.log(`✅ Transaction mined! Hash: ${tx.hash}`);
 
@@ -137,7 +142,7 @@ async function runOnChainE2E() {
 
   const updatedUser1 = await User.findOne({ username: 'User1' });
   console.log(`User1 DB Tier: ${updatedUser1?.tier}`);
-  if (updatedUser1?.tier === 'Hunter') {
+  if (updatedUser1?.tier === 'Platinum') {
       console.log("🎉 SUCCESS: Backend automatically upgraded tier via blockchain event!");
   } else {
       console.error("❌ FAILED: Backend did not update tier.");

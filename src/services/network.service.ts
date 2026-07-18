@@ -79,6 +79,15 @@ export class NetworkService {
    * getUplines fetches the closest 12 parent wallet addresses.
    */
   static async getUplines(username: string): Promise<string[]> {
+    const { uplines } = await this.getUplinesWithRanks(username);
+    return uplines;
+  }
+
+  /**
+   * Closest 12 parent wallets plus each parent's contract rank index
+   * (NONE..HUNTER). Used to build the backend-signed commission auth payload.
+   */
+  static async getUplinesWithRanks(username: string): Promise<{ uplines: string[]; ranks: number[] }> {
     const user = await User.findOne({ username });
     if (!user) {
       throw new Error('User not found');
@@ -87,17 +96,27 @@ export class NetworkService {
     // ancestors is ordered e.g. ["root", "sponsor1", "sponsor2"]
     // We want up to 12 immediate ancestors (the closest ones), which are at the end of the array.
     const ancestorsToFetch = user.ancestors.slice(-12).reverse();
-    
-    // We need to fetch the wallet addresses for these ancestors.
+
     const parentUsers = await User.find({ username: { $in: ancestorsToFetch } });
-    
-    // Map them in the correct order
-    const uplineAddresses = ancestorsToFetch.map(u => {
-        const found = parentUsers.find(p => p.username === u);
-        return found ? found.walletAddress : '0x0000000000000000000000000000000000000000';
-    });
-    
-    return uplineAddresses;
+
+    const uplines: string[] = [];
+    const ranks: number[] = [];
+
+    for (const uname of ancestorsToFetch) {
+      const found = parentUsers.find((p) => p.username === uname);
+      uplines.push(found ? found.walletAddress : '0x0000000000000000000000000000000000000000');
+      ranks.push(this.toContractRankIndex(found?.rank || Rank.NONE));
+    }
+
+    return { uplines, ranks };
+  }
+
+  /** Maps a backend rank name to the on-chain Rank enum index (0..4). */
+  static toContractRankIndex(rankName: string): number {
+    const idx = RANK_ORDER.indexOf(rankName as Rank);
+    if (idx < 0) return 0;
+    // Contract Rank enum only supports NONE..HUNTER (indices 0..4).
+    return Math.min(idx, 4);
   }
 
   /**
@@ -218,8 +237,11 @@ export class NetworkService {
     if (newRank !== user.rank) {
         user.rank = newRank as any;
         await user.save();
+        logger.info(`Rank updated off-chain for ${user.walletAddress}: ${newRank}`);
     }
 
+    // Rank stays off-chain; purchase/upgrade txs carry a company-wallet signature
+    // over the current upline ranks so the contract can enforce commission gates.
     return newRank;
   }
 
@@ -289,23 +311,23 @@ export class NetworkService {
   }
 
   private static getTierLevel(tier: string): number {
-    const levels = {
-      'None': 0, 'Scout': 1, 'Tracker': 2, 'Ranger': 3, 'Hunter': 4, 'Apex': 5
+    const levels: Record<string, number> = {
+      'None': 0, 'Bronze': 1, 'Silver': 2, 'Gold': 3, 'Platinum': 4, 'Diamond': 5
     };
-    return (levels as any)[tier] || 0;
+    return levels[tier] || 0;
   }
 
   private static getRequiredTierLevelForRank(rankName: string): number {
     switch (rankName) {
       case 'Legend Hunter':
       case 'Master Hunter':
-        return 5; // Apex
+        return 5; // Diamond
       case 'Elite Hunter':
       case 'Hunter':
-        return 4; // Hunter
-      case 'Ranger': return 3; // Ranger
-      case 'Tracker': return 2; // Tracker
-      case 'Scout': return 1; // Scout
+        return 4; // Platinum
+      case 'Ranger': return 3; // Gold
+      case 'Tracker': return 2; // Silver
+      case 'Scout': return 1; // Bronze
       default: return 0;
     }
   }
@@ -402,7 +424,7 @@ export class NetworkService {
     ]);
 
     const tierIndex = Number(onChainUser[0]);
-    const tierNames = ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Apex'];
+    const tierNames = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'];
 
     let claimableNow = 0;
     let lockedRemaining = 0;
