@@ -11,13 +11,25 @@ import { NotificationService } from './notification.service';
 
 const POLL_INTERVAL_MS = 15_000; // Poll every 15 seconds
 const SYNC_KEY = 'blockchain-listener';
+// Alchemy Free (and similar tiers) reject eth_getLogs over >10 blocks.
+// Keep chunks at 10 so the listener can catch up after downtime without failing.
+const MAX_LOG_BLOCK_RANGE = Number(process.env.ETH_GETLOGS_MAX_RANGE || 10);
 
 export class BlockchainService {
   private lastProcessedBlock = 0;
   private iface = new ethers.Interface(contractABI);
+  private eventTopics = [
+    ethers.id('MembershipPurchased(address,uint8,uint256,address)'),
+    ethers.id('MembershipUpgraded(address,uint8,uint8,uint256,address)'),
+    ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)'),
+    ethers.id('CommissionWithdrawn(address,uint256,address)'),
+    ethers.id('CompanyWalletWithdrawn(address,address,uint256,address)'),
+  ];
 
   public async startListening() {
-    logger.info('Started polling for blockchain events (using eth_getLogs)...');
+    logger.info(
+      `Started polling for blockchain events (eth_getLogs, max ${MAX_LOG_BLOCK_RANGE} blocks/chunk)...`,
+    );
 
     try {
       const currentBlock = await provider.getBlockNumber();
@@ -43,6 +55,55 @@ export class BlockchainService {
     this.poll();
   }
 
+  private async persistCursor(block: number) {
+    this.lastProcessedBlock = block;
+    await SyncState.findOneAndUpdate(
+      { key: SYNC_KEY },
+      { key: SYNC_KEY, lastProcessedBlock: block, updatedAt: new Date() },
+      { upsert: true },
+    );
+  }
+
+  private async processLog(log: ethers.Log) {
+    const parsed = this.iface.parseLog({ topics: log.topics as string[], data: log.data });
+    if (!parsed) return;
+
+    if (parsed.name === 'MembershipPurchased') {
+      const [buyer, tierIndex] = parsed.args;
+      logger.info(`MembershipPurchased event detected for ${buyer} at block ${log.blockNumber}`);
+      await this.handlePurchaseOrUpgrade(buyer, Number(tierIndex), log.transactionHash, 'PURCHASE');
+    } else if (parsed.name === 'MembershipUpgraded') {
+      const [buyer, , newTier] = parsed.args;
+      logger.info(`MembershipUpgraded event detected for ${buyer} at block ${log.blockNumber}`);
+      await this.handlePurchaseOrUpgrade(buyer, Number(newTier), log.transactionHash, 'UPGRADE');
+    } else if (parsed.name === 'CommissionEarned') {
+      const [user, liquidAmount, lockedAmount, level, token] = parsed.args;
+      logger.info(`CommissionEarned event detected for ${user}: level ${level}, token ${token}`);
+      await this.handleCommissionEarned(
+        user,
+        BigInt(liquidAmount.toString()),
+        BigInt(lockedAmount.toString()),
+        Number(level),
+        token,
+        log.transactionHash,
+      );
+    } else if (parsed.name === 'CommissionWithdrawn') {
+      const [user, amount, token] = parsed.args;
+      logger.info(`CommissionWithdrawn event detected for ${user}: token ${token}`);
+      await this.handleCommissionWithdrawn(user, BigInt(amount.toString()), token, log.transactionHash);
+    } else if (parsed.name === 'CompanyWalletWithdrawn') {
+      const [user, token, amount, companyWallet] = parsed.args;
+      logger.info(`CompanyWalletWithdrawn event detected for ${user}: token ${token}, amount ${amount}`);
+      await this.handleCompanyWalletWithdrawn(
+        user,
+        BigInt(amount.toString()),
+        token,
+        companyWallet,
+        log.transactionHash,
+      );
+    }
+  }
+
   private async poll() {
     try {
       const currentBlock = await provider.getBlockNumber();
@@ -51,75 +112,35 @@ export class BlockchainService {
         return;
       }
 
-      const purchasedTopic = ethers.id('MembershipPurchased(address,uint8,uint256,address)');
-      const upgradedTopic = ethers.id('MembershipUpgraded(address,uint8,uint8,uint256,address)');
-      const commissionEarnedTopic = ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)');
-      const commissionWithdrawnTopic = ethers.id('CommissionWithdrawn(address,uint256,address)');
-      const companyWalletWithdrawnTopic = ethers.id('CompanyWalletWithdrawn(address,address,uint256,address)');
+      // Walk forward in small chunks so free-tier RPCs (10-block eth_getLogs limit)
+      // can still sync after the process was down for many blocks.
+      let from = this.lastProcessedBlock + 1;
+      while (from <= currentBlock) {
+        const to = Math.min(from + MAX_LOG_BLOCK_RANGE - 1, currentBlock);
 
-      const logs = await provider.getLogs({
-        address: CONTRACT_ADDRESS,
-        topics: [[purchasedTopic, upgradedTopic, commissionEarnedTopic, commissionWithdrawnTopic, companyWalletWithdrawnTopic]],
-        fromBlock: this.lastProcessedBlock + 1,
-        toBlock: currentBlock,
-      });
+        const logs = await provider.getLogs({
+          address: CONTRACT_ADDRESS,
+          topics: [this.eventTopics],
+          fromBlock: from,
+          toBlock: to,
+        });
 
-      // Sort by block number and log index so we process events in exact chain order.
-      const sortedLogs = logs.sort((a, b) => {
-        if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
-        return (a.index ?? 0) - (b.index ?? 0);
-      });
+        const sortedLogs = logs.sort((a, b) => {
+          if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
+          return (a.index ?? 0) - (b.index ?? 0);
+        });
 
-      for (const log of sortedLogs) {
-        try {
-          const parsed = this.iface.parseLog({ topics: log.topics as string[], data: log.data });
-          if (!parsed) continue;
-
-          if (parsed.name === 'MembershipPurchased') {
-            const [buyer, tierIndex, , ] = parsed.args;
-            logger.info(`MembershipPurchased event detected for ${buyer} at block ${log.blockNumber}`);
-            await this.handlePurchaseOrUpgrade(buyer, Number(tierIndex), log.transactionHash, 'PURCHASE');
-          } else if (parsed.name === 'MembershipUpgraded') {
-            const [buyer, , newTier, , ] = parsed.args;
-            logger.info(`MembershipUpgraded event detected for ${buyer} at block ${log.blockNumber}`);
-            await this.handlePurchaseOrUpgrade(buyer, Number(newTier), log.transactionHash, 'UPGRADE');
-          } else if (parsed.name === 'CommissionEarned') {
-            const [user, liquidAmount, lockedAmount, level, token] = parsed.args;
-            logger.info(`CommissionEarned event detected for ${user}: level ${level}, token ${token}`);
-            await this.handleCommissionEarned(
-              user,
-              BigInt(liquidAmount.toString()),
-              BigInt(lockedAmount.toString()),
-              Number(level),
-              token,
-              log.transactionHash,
-            );
-          } else if (parsed.name === 'CommissionWithdrawn') {
-            const [user, amount, token] = parsed.args;
-            logger.info(`CommissionWithdrawn event detected for ${user}: token ${token}`);
-            await this.handleCommissionWithdrawn(user, BigInt(amount.toString()), token, log.transactionHash);
-          } else if (parsed.name === 'CompanyWalletWithdrawn') {
-            const [user, token, amount, companyWallet] = parsed.args;
-            logger.info(`CompanyWalletWithdrawn event detected for ${user}: token ${token}, amount ${amount}`);
-            await this.handleCompanyWalletWithdrawn(
-              user,
-              BigInt(amount.toString()),
-              token,
-              companyWallet,
-              log.transactionHash,
-            );
+        for (const log of sortedLogs) {
+          try {
+            await this.processLog(log);
+          } catch (parseErr: any) {
+            logger.error('Error parsing/processing log:', parseErr.message);
           }
-        } catch (parseErr: any) {
-          logger.error('Error parsing log:', parseErr.message);
         }
-      }
 
-      this.lastProcessedBlock = currentBlock;
-      await SyncState.findOneAndUpdate(
-        { key: SYNC_KEY },
-        { key: SYNC_KEY, lastProcessedBlock: currentBlock, updatedAt: new Date() },
-        { upsert: true },
-      );
+        await this.persistCursor(to);
+        from = to + 1;
+      }
     } catch (error: any) {
       logger.error('Polling error:', error.message);
     }
