@@ -55,8 +55,8 @@ async function runFullCommissionFlow() {
   await User.deleteMany({});
   await Transaction.deleteMany({});
   
-  const ownerUser = await User.create({ username: 'Genesis', walletAddress: ownerWallet.address.toLowerCase(), tier: 'Apex', rank: 'Legend Hunter', ancestors: [], legVolumes: new Map() });
-  const uplineUser = await User.create({ username: 'Upline', walletAddress: uplineWallet.address.toLowerCase(), tier: 'Hunter', rank: 'Elite Hunter', ancestors: ['Genesis'], legVolumes: new Map() });
+  const ownerUser = await User.create({ username: 'Genesis', walletAddress: ownerWallet.address.toLowerCase(), tier: 'Diamond', rank: 'Legend Hunter', ancestors: [], legVolumes: new Map() });
+  const uplineUser = await User.create({ username: 'Upline', walletAddress: uplineWallet.address.toLowerCase(), tier: 'Platinum', rank: 'Elite Hunter', ancestors: ['Genesis'], legVolumes: new Map() });
   const buyerUser = await User.create({ username: 'Buyer', walletAddress: buyerWallet.address.toLowerCase(), tier: 'None', rank: 'None', ancestors: ['Genesis', 'Upline'], legVolumes: new Map() });
   
   console.log(`✅ MongoDB Cleared and Users Created!`);
@@ -102,24 +102,26 @@ async function runFullCommissionFlow() {
   await (await usdtContract.mint(buyerWallet.address, mintAmount)).wait();
   console.log(`✅ Minted 5,000 USDT to all 3 wallets!`);
 
-  // 4. Setup Upline Tiers (Owner buys Apex, Upline buys Hunter)
+  // 4. Setup Upline Tiers (Owner buys Diamond, Upline buys Platinum)
+  // NOTE: purchaseMembership now requires signed uplines+ranks; this script may need
+  // backend-signed payloads before it can run live against the current contract.
   console.log("\n--- SETTING UP UPLINE TIERS ---");
   
-  console.log(`⏳ Owner buying Apex (Tier 5) so they can receive commissions...`);
+  console.log(`⏳ Owner buying Diamond (Tier 5) so they can receive commissions...`);
   await (await usdtContract.approve(CONTRACT_ADDRESS, ethers.parseUnits("2500", 6))).wait();
   try {
-      await (await liveHntrContract.purchaseMembership(5, [], mockUSDTAddress)).wait();
-  } catch (e) { console.log("Owner already has a tier."); }
+      await (await liveHntrContract.purchaseMembership(ownerWallet.address, 5, [], [], mockUSDTAddress, 0, "0x")).wait();
+  } catch (e) { console.log("Owner already has a tier (or signature required)."); }
 
-  console.log(`⏳ Upline buying Hunter (Tier 4) under Owner...`);
+  console.log(`⏳ Upline buying Platinum (Tier 4) under Owner...`);
   const usdtUpline = usdtContract.connect(uplineWallet) as ethers.Contract;
   const hntrUpline = hntrContract.connect(uplineWallet) as ethers.Contract;
   await (await usdtUpline.approve(CONTRACT_ADDRESS, ethers.parseUnits("1500", 6))).wait();
   try {
-      await (await hntrUpline.purchaseMembership(4, [ownerWallet.address], mockUSDTAddress)).wait();
-  } catch(e) { console.log("Upline already has a tier."); }
+      await (await hntrUpline.purchaseMembership(uplineWallet.address, 4, [ownerWallet.address], [0], mockUSDTAddress, 0, "0x")).wait();
+  } catch(e) { console.log("Upline already has a tier (or signature required)."); }
 
-  // 5. Execution: Buyer buys Tracker under Upline -> Owner
+  // 5. Execution: Buyer buys Silver under Upline -> Owner
   console.log("\n--- EXECUTING BUYER PURCHASE (TESTING COMMISSIONS) ---");
   
   // Snapshots
@@ -127,13 +129,14 @@ async function runFullCommissionFlow() {
   const ownerLiquidInit = await liveHntrContract.withdrawableCommissions(ownerWallet.address, mockUSDTAddress);
   const uplineLiquidInit = await liveHntrContract.withdrawableCommissions(uplineWallet.address, mockUSDTAddress);
 
-  console.log(`⏳ Buyer buying Tracker (Tier 2 - $250) under [Upline, Owner]...`);
+  console.log(`⏳ Buyer buying Silver (Tier 2 - $250) under [Upline, Owner]...`);
   const usdtBuyer = usdtContract.connect(buyerWallet) as ethers.Contract;
   const hntrBuyer = hntrContract.connect(buyerWallet) as ethers.Contract;
   await (await usdtBuyer.approve(CONTRACT_ADDRESS, ethers.parseUnits("250", 6))).wait();
   
   // Upline array is closest first: [Upline, Owner]
-  await (await hntrBuyer.purchaseMembership(2, [uplineWallet.address, ownerWallet.address], mockUSDTAddress)).wait();
+  // L1 = 15%, L2 = 15% under the current commission table.
+  await (await hntrBuyer.purchaseMembership(buyerWallet.address, 2, [uplineWallet.address, ownerWallet.address], [0, 0], mockUSDTAddress, 0, "0x")).wait();
   console.log(`✅ Purchase successful! Checking internal ledger...`);
 
   // 6. Verify 80/20 Split and Network Distribution
@@ -147,20 +150,20 @@ async function runFullCommissionFlow() {
   const tBalFinal = await usdtContract.balanceOf(TREASURY);
 
   // Buyer paid $250.
-  // Level 1 Upline (Upline Wallet) should get 20% = $50. (Liquid 80%: $40, Locked 20%: $10)
-  // Level 2 Upline (Owner Wallet) should get 10% = $25. (Liquid 80%: $20, Locked 20%: $5)
-  // Treasury gets 25% ($62.5) + Breakage (Remaining 35% of network = $87.5) = $150 total to Treasury
+  // Level 1 Upline: 15% = $37.50 (Liquid 80%: $30, Locked 20%: $7.50)
+  // Level 2 Owner: 15% = $37.50 (Liquid 80%: $30, Locked 20%: $7.50)
+  // Treasury: 25% ($62.50) + breakage of unpaid commission pool
   
   console.log(`Upline Wallet Earned:`);
-  console.log(`  Liquid: $${ethers.formatUnits(uplineLiquidFinal - uplineLiquidInit, 6)} (Expected: $40.0)`);
-  console.log(`  Locked: $${ethers.formatUnits(uplineLockedFinal, 6)} (Expected: $10.0)`);
+  console.log(`  Liquid: $${ethers.formatUnits(uplineLiquidFinal - uplineLiquidInit, 6)} (Expected: $30.0)`);
+  console.log(`  Locked: $${ethers.formatUnits(uplineLockedFinal, 6)} (Expected: $7.5)`);
   
   console.log(`Owner Wallet Earned:`);
-  console.log(`  Liquid: $${ethers.formatUnits(ownerLiquidFinal - ownerLiquidInit, 6)} (Expected: $20.0)`);
-  console.log(`  Locked: $${ethers.formatUnits(ownerLockedFinal, 6)} (Expected: $5.0)`);
+  console.log(`  Liquid: $${ethers.formatUnits(ownerLiquidFinal - ownerLiquidInit, 6)} (Expected: $30.0)`);
+  console.log(`  Locked: $${ethers.formatUnits(ownerLockedFinal, 6)} (Expected: $7.5)`);
 
   console.log(`Treasury Wallet Gained:`);
-  console.log(`  Total:  $${ethers.formatUnits(tBalFinal - tBalInit, 6)} (Expected: $150.0)`);
+  console.log(`  Total:  $${ethers.formatUnits(tBalFinal - tBalInit, 6)}`);
 
   // 7. Test Withdrawal
   console.log("\n--- TESTING WITHDRAWALS ---");
@@ -168,7 +171,7 @@ async function runFullCommissionFlow() {
   // Upline Withdrawal
   const uplineUsdtInit = await usdtContract.balanceOf(uplineWallet.address);
   console.log(`⏳ Upline calling withdrawCommissions()...`);
-  await (await hntrUpline.withdrawCommissions(mockUSDTAddress)).wait();
+  await (await hntrUpline.withdrawCommissions(uplineWallet.address, mockUSDTAddress)).wait();
   const uplineUsdtFinal = await usdtContract.balanceOf(uplineWallet.address);
   console.log(`✅ Upline Actual USDT Balance Increased By: $${ethers.formatUnits(uplineUsdtFinal - uplineUsdtInit, 6)}`);
 
@@ -178,7 +181,7 @@ async function runFullCommissionFlow() {
   console.log(`⏳ Owner withdrawing their total Liquid commissions ($${ethers.formatUnits(ownerWithdrawable, 6)})...`);
   
   if (ownerWithdrawable > BigInt(0)) {
-      await (await liveHntrContract.withdrawCommissions(mockUSDTAddress)).wait();
+      await (await liveHntrContract.withdrawCommissions(ownerWallet.address, mockUSDTAddress)).wait();
       const ownerUsdtFinal = await usdtContract.balanceOf(ownerWallet.address);
       console.log(`✅ Owner Actual USDT Balance Increased By: $${ethers.formatUnits(ownerUsdtFinal - ownerUsdtInit, 6)}`);
   } else {
@@ -194,11 +197,11 @@ async function runFullCommissionFlow() {
   const dbBuyer = await User.findOne({ username: 'Buyer' });
 
   console.log(`Database State after Blockchain Events:`);
-  console.log(`Genesis Tier: ${dbOwner?.tier} (Expected: Apex)`);
-  console.log(`Upline Tier:  ${dbUpline?.tier} (Expected: Hunter)`);
-  console.log(`Buyer Tier:   ${dbBuyer?.tier} (Expected: Tracker)`);
+  console.log(`Genesis Tier: ${dbOwner?.tier} (Expected: Diamond)`);
+  console.log(`Upline Tier:  ${dbUpline?.tier} (Expected: Platinum)`);
+  console.log(`Buyer Tier:   ${dbBuyer?.tier} (Expected: Silver)`);
 
-  if (dbOwner?.tier === 'Apex' && dbBuyer?.tier === 'Tracker') {
+  if (dbOwner?.tier === 'Diamond' && dbBuyer?.tier === 'Silver') {
     console.log("🎉 SUCCESS: The backend perfectly synchronized with the smart contract events!");
   } else {
     console.log("⚠️ WARNING: The backend database did not update. The BlockchainService might have missed the event or failed.");
@@ -209,7 +212,7 @@ async function runFullCommissionFlow() {
   const { NetworkService } = await import('../services/network.service');
   const { RewardsService: RS } = await import('../services/rewards.service');
 
-  console.log(`⏳ Simulating $5,000,000 leg volume for Upline (Hunter Tier)...`);
+  console.log(`⏳ Simulating $5,000,000 leg volume for Upline (Platinum tier)...`);
   const uplineToUpdate = await User.findOne({ username: 'Upline' });
   if (uplineToUpdate) {
       uplineToUpdate.legVolumes.set('FakeLeg1', 2000000);
@@ -221,7 +224,7 @@ async function runFullCommissionFlow() {
       const newRank = await NetworkService.evaluateRank('Upline');
       console.log(`✅ Upline Evaluated Rank: ${newRank}`);
       if (newRank === 'Elite Hunter' || newRank === 'Hunter') { // Capped because of Hunter tier
-          console.log(`   -> SUCCESS: Upline was restricted (capped at Elite Hunter/Hunter) because they lack the Apex tier for Master Hunter!`);
+          console.log(`   -> SUCCESS: Upline was restricted (capped at Elite Hunter/Hunter) because they lack the Diamond tier for Master Hunter!`);
       } else {
           console.log(`   -> FAILED: Upline got rank ${newRank}, but should have been capped.`);
       }

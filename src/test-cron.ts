@@ -24,7 +24,7 @@ async function testCron() {
     rank: 'Legend Hunter',
     ancestors: [],
     directDownline: [],
-    tier: 'Apex',
+    tier: 'Diamond',
     teamVolume: 30000000,
     legVolumes: new Map(),
     joinedAt: new Date()
@@ -36,7 +36,7 @@ async function testCron() {
     rank: 'Elite Hunter',
     ancestors: [],
     directDownline: [],
-    tier: 'Hunter',
+    tier: 'Platinum',
     teamVolume: 1000000,
     legVolumes: new Map(),
     joinedAt: new Date()

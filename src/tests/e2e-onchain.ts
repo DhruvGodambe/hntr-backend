@@ -130,8 +130,16 @@ async function runOnChainE2E() {
   console.log(`🚀 Sending REAL purchase tx to Anvil...`);
   const hntrAsUser1 = new ethers.Contract(contractAddress, hntrJson.abi, user1Signer);
 
-  // Tier 4 = Platinum
-  const tx = await hntrAsUser1.purchaseMembership(user1Signer.address, 4, [genesisSigner.address], usdcAddress);
+  // Tier 4 = Platinum (requires backend-signed ranks/deadline against the live contract ABI)
+  const tx = await hntrAsUser1.purchaseMembership(
+    user1Signer.address,
+    4,
+    [genesisSigner.address],
+    [0],
+    usdcAddress,
+    Math.floor(Date.now() / 1000) + 3600,
+    "0x",
+  );
   await tx.wait();
   console.log(`✅ Transaction mined! Hash: ${tx.hash}`);
 

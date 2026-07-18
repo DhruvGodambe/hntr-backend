@@ -39,7 +39,7 @@ async function runE2E() {
     sponsorUsername: null,
     ancestors: [],
     directDownline: [],
-    tier: 'Apex',
+    tier: 'Diamond',
     rank: 'Legend Hunter', // Start genesis at max rank for testing
     teamVolume: 0,
     legVolumes: new Map(),
@@ -128,7 +128,7 @@ async function runE2E() {
     sponsorUsername: null,
     ancestors: [],
     directDownline: ['LegA', 'LegB', 'LegC'],
-    tier: 'Apex',
+    tier: 'Diamond',
     rank: 'None',
     legVolumes: new Map([['LegA', 10000], ['LegB', 8000], ['LegC', 5000]]),
   });
@@ -139,13 +139,13 @@ async function runE2E() {
   let qualifyingVolume = 0;
   
   // Sort legs by volume descending
-  const legs = Array.from(tester.legVolumes.values()).sort((a, b) => b - a);
+  const legs = Array.from(tester.legVolumes.values()).sort((a: number, b: number) => b - a);
   // Largest leg
   qualifyingVolume += Math.min(legs[0] || 0, max40);
   // Second largest
   qualifyingVolume += Math.min(legs[1] || 0, max40);
   // Rest
-  const rest = legs.slice(2).reduce((sum, val) => sum + val, 0);
+  const rest = legs.slice(2).reduce((sum: number, val: number) => sum + val, 0);
   qualifyingVolume += Math.min(rest, goal * 0.20); // 2000
 
   console.log(`   Leg A Volume: $${legs[0] || 0} -> Qualifying: $${Math.min(legs[0] || 0, max40)}`);
