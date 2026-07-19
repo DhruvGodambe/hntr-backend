@@ -8,10 +8,13 @@ export type PointsSource =
 
 export interface IPointsLedger extends Document {
   walletAddress: string;
-  amount: number; // points awarded
+  /** Stable idempotency key: source:txHash or source:txHash:Llevel:token */
+  entryKey: string;
+  amount: number;
   source: PointsSource;
-  usdValue: number; // USD amount that generated the points
+  usdValue: number;
   txHash?: string;
+  level?: number;
   timestamp: Date;
 }
 
@@ -20,6 +23,10 @@ const PointsLedgerSchema: Schema = new Schema({
     type: String,
     required: true,
     index: true,
+  },
+  entryKey: {
+    type: String,
+    required: true,
   },
   amount: {
     type: Number,
@@ -38,16 +45,16 @@ const PointsLedgerSchema: Schema = new Schema({
     type: String,
     index: true,
   },
+  level: {
+    type: Number,
+  },
   timestamp: {
     type: Date,
     default: Date.now,
   },
 });
 
-// Prevent double-counting when the same event is reprocessed.
-PointsLedgerSchema.index(
-  { txHash: 1, walletAddress: 1, source: 1 },
-  { unique: true, sparse: true },
-);
+// Primary idempotency key for awards + reconciliation.
+PointsLedgerSchema.index({ walletAddress: 1, entryKey: 1 }, { unique: true });
 
 export default mongoose.model<IPointsLedger>('PointsLedger', PointsLedgerSchema);

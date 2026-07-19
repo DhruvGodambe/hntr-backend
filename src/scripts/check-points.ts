@@ -24,24 +24,31 @@ async function checkPoints() {
 
     const transactions = await Transaction.find({
       walletAddress: user.walletAddress,
-      status: { $in: ['CONFIRMED', 'PENDING'] },
+      status: 'CONFIRMED',
     }).sort({ timestamp: -1 }).lean();
 
-    logger.info(`Found ${transactions.length} transactions`);
+    logger.info(`Found ${transactions.length} CONFIRMED transactions`);
 
     let expectedFromMembership = 0;
     let expectedFromCommission = 0;
+    const seen = new Set<string>();
 
     for (const tx of transactions) {
       switch (tx.type) {
         case 'PURCHASE':
         case 'UPGRADE': {
+          const key = `${tx.type}:${(tx.txHash || String(tx._id)).toLowerCase()}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
           const points = Math.round((tx.amount || 0) * 250);
           expectedFromMembership += points;
           logger.info(`  ${tx.type} ${tx.tier || ''}: $${tx.amount} -> ${points} pts`);
           break;
         }
         case 'COMMISSION_EARNED': {
+          const key = `COMMISSION_EARNED:${(tx.txHash || String(tx._id)).toLowerCase()}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
           const commissionTotal = (tx.liquidAmount || 0) + (tx.lockedAmount || 0);
           const points = Math.round(commissionTotal * 10);
           expectedFromCommission += points;

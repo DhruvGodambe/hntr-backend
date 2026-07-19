@@ -14,6 +14,22 @@ const SYNC_KEY = 'blockchain-listener';
 // Alchemy Free (and similar tiers) reject eth_getLogs over >10 blocks.
 // Keep chunks at 10 so the listener can catch up after downtime without failing.
 const MAX_LOG_BLOCK_RANGE = Number(process.env.ETH_GETLOGS_MAX_RANGE || 10);
+// Stay this many blocks behind the reported tip so eth_getLogs never asks for a
+// range past a lagging replica's head ("block range extends beyond current head").
+const LOG_CONFIRMATIONS = Number(process.env.ETH_LOG_CONFIRMATIONS || 3);
+
+function isBeyondHeadError(error: any): boolean {
+  const message = String(error?.message || error?.shortMessage || error || '').toLowerCase();
+  const nested = String(error?.error?.message || error?.info?.error?.message || '').toLowerCase();
+  const code = error?.error?.code ?? error?.code;
+  return (
+    code === -32602 ||
+    message.includes('beyond current head') ||
+    message.includes('extends beyond') ||
+    nested.includes('beyond current head') ||
+    nested.includes('extends beyond')
+  );
+}
 
 export class BlockchainService {
   private lastProcessedBlock = 0;
@@ -28,23 +44,32 @@ export class BlockchainService {
 
   public async startListening() {
     logger.info(
-      `Started polling for blockchain events (eth_getLogs, max ${MAX_LOG_BLOCK_RANGE} blocks/chunk)...`,
+      `Started polling for blockchain events (eth_getLogs, max ${MAX_LOG_BLOCK_RANGE} blocks/chunk, ${LOG_CONFIRMATIONS} conf)...`,
     );
 
     try {
       const currentBlock = await provider.getBlockNumber();
+      const safeHead = Math.max(0, currentBlock - LOG_CONFIRMATIONS);
       const syncState = await SyncState.findOne({ key: SYNC_KEY }).lean();
 
       if (syncState && syncState.lastProcessedBlock > 0) {
         // Resume from the last persisted block so we don't miss events that
         // happened while the backend was restarting or down.
         this.lastProcessedBlock = syncState.lastProcessedBlock;
-        logger.info(`Resuming listener from block ${this.lastProcessedBlock} (current ${currentBlock})`);
+        // Cursor can sit ahead of a lagging RPC head after a provider failover.
+        if (this.lastProcessedBlock > safeHead) {
+          logger.warn(
+            `Sync cursor ${this.lastProcessedBlock} is ahead of safe head ${safeHead} (tip ${currentBlock}); clamping`,
+          );
+          this.lastProcessedBlock = safeHead;
+          await this.persistCursor(this.lastProcessedBlock);
+        }
+        logger.info(`Resuming listener from block ${this.lastProcessedBlock} (tip ${currentBlock}, safe ${safeHead})`);
       } else {
-        this.lastProcessedBlock = currentBlock;
+        this.lastProcessedBlock = safeHead;
         await SyncState.findOneAndUpdate(
           { key: SYNC_KEY },
-          { key: SYNC_KEY, lastProcessedBlock: currentBlock, updatedAt: new Date() },
+          { key: SYNC_KEY, lastProcessedBlock: safeHead, updatedAt: new Date() },
           { upsert: true, new: true },
         );
       }
@@ -106,8 +131,19 @@ export class BlockchainService {
 
   private async poll() {
     try {
-      const currentBlock = await provider.getBlockNumber();
-      if (currentBlock <= this.lastProcessedBlock) {
+      const tip = await provider.getBlockNumber();
+      const safeHead = Math.max(0, tip - LOG_CONFIRMATIONS);
+
+      if (this.lastProcessedBlock > safeHead) {
+        logger.warn(
+          `Sync cursor ${this.lastProcessedBlock} ahead of safe head ${safeHead}; clamping`,
+        );
+        await this.persistCursor(safeHead);
+        setTimeout(() => this.poll(), POLL_INTERVAL_MS);
+        return;
+      }
+
+      if (safeHead <= this.lastProcessedBlock) {
         setTimeout(() => this.poll(), POLL_INTERVAL_MS);
         return;
       }
@@ -115,15 +151,32 @@ export class BlockchainService {
       // Walk forward in small chunks so free-tier RPCs (10-block eth_getLogs limit)
       // can still sync after the process was down for many blocks.
       let from = this.lastProcessedBlock + 1;
-      while (from <= currentBlock) {
-        const to = Math.min(from + MAX_LOG_BLOCK_RANGE - 1, currentBlock);
+      while (from <= safeHead) {
+        // Re-read tip each chunk — RPC fleets can lag between eth_blockNumber and eth_getLogs.
+        const liveTip = await provider.getBlockNumber();
+        const liveSafeHead = Math.max(0, liveTip - LOG_CONFIRMATIONS);
+        if (from > liveSafeHead) break;
 
-        const logs = await provider.getLogs({
-          address: CONTRACT_ADDRESS,
-          topics: [this.eventTopics],
-          fromBlock: from,
-          toBlock: to,
-        });
+        const to = Math.min(from + MAX_LOG_BLOCK_RANGE - 1, liveSafeHead);
+
+        let logs: ethers.Log[];
+        try {
+          logs = await provider.getLogs({
+            address: CONTRACT_ADDRESS,
+            topics: [this.eventTopics],
+            fromBlock: from,
+            toBlock: to,
+          });
+        } catch (logErr: any) {
+          if (isBeyondHeadError(logErr)) {
+            // Provider tip moved backwards / lagging replica — stop this pass; retry next tick.
+            logger.warn(
+              `eth_getLogs beyond head for [${from}, ${to}] (tip≈${liveTip}); backing off until next poll`,
+            );
+            break;
+          }
+          throw logErr;
+        }
 
         const sortedLogs = logs.sort((a, b) => {
           if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
@@ -289,6 +342,7 @@ export class BlockchainService {
           'COMMISSION_EARNED',
           total,
           txHash,
+          { level, token: tokenAddress.toLowerCase() },
         );
       } catch (pointsErr: any) {
         logger.error(`Failed to award points for commission ${txHash}: ${pointsErr.message}`);

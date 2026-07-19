@@ -85,7 +85,10 @@ async function backfillCommissions() {
       });
 
       try {
-        await PointsService.awardPoints(walletAddress, 'COMMISSION_EARNED', total, txHash);
+        await PointsService.awardPoints(walletAddress, 'COMMISSION_EARNED', total, txHash, {
+          level: levelNum,
+          token: tokenAddress,
+        });
       } catch (pointsErr: any) {
         logger.error(`Failed to award points for ${txHash}: ${pointsErr.message}`);
       }
