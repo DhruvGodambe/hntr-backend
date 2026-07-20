@@ -9,8 +9,12 @@ import { RewardsService } from './rewards.service';
 import { NetworkService } from './network.service';
 import { CompanyWalletService } from './companyWallet.service';
 import { hntrContract, getErc20, getContractAmountDecimals } from './contract.service';
+import { getLogsViaEtherscan } from './etherscan.service';
+import { ENV } from '../config/env';
 import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares } from '../constants';
 import { paginatedResponse, sanitizeSearch } from '../utils/pagination';
+import { logger } from '../utils/logger';
+import { runMonthlyLeadershipPayout } from '../jobs/leadership-cron';
 
 export class AdminPanelError extends Error {
   code: string;
@@ -41,6 +45,21 @@ const TX_TYPE_MAP: Record<string, string[]> = {
   purchases: ['PURCHASE', 'UPGRADE'],
   withdrawals: ['COMMISSION_WITHDRAWN', 'COMPANY_WALLET_WITHDRAWN', 'COMMISSION_CLAIM'],
 };
+
+const ERC20_TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
+
+function formatMetricUsd(amount: number): string {
+  if (!Number.isFinite(amount) || amount === 0) return '$0.00';
+  if (Math.abs(amount) >= 1_000_000) return `$${(amount / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(amount) >= 1_000) {
+    return `$${amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  }
+  return `$${amount.toFixed(2)}`;
+}
+
+function padAddressTopic(address: string): string {
+  return ethers.zeroPadValue(ethers.getAddress(address), 32);
+}
 
 async function readWalletStablecoinBalances(walletAddress: string) {
   const [usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
@@ -91,11 +110,14 @@ export class AdminPanelService {
       totalUsers,
       soldMemberships,
       volumeAgg,
+      lockedVolumeAgg,
       commissionAgg,
       thisMonthUsers,
       lastMonthUsers,
       thisMonthVolume,
+      thisMonthLockedVolume,
       lastMonthVolume,
+      lastMonthLockedVolume,
       treasuryAddress,
       leadershipAddress,
       achievementAddress,
@@ -110,7 +132,26 @@ export class AdminPanelService {
       ]),
       Transaction.aggregate([
         { $match: { type: 'COMMISSION_EARNED', status: 'CONFIRMED' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$lockedAmount', 0] } } } },
+      ]),
+      Transaction.aggregate([
+        { $match: { type: 'COMMISSION_EARNED', status: 'CONFIRMED' } },
+        {
+          $group: {
+            _id: null,
+            total: {
+              $sum: {
+                // Prefer liquid+locked so the 20% pool share is never dropped; fall back to amount.
+                $max: [
+                  {
+                    $add: [{ $ifNull: ['$liquidAmount', 0] }, { $ifNull: ['$lockedAmount', 0] }],
+                  },
+                  { $ifNull: ['$amount', 0] },
+                ],
+              },
+            },
+          },
+        },
       ]),
       User.countDocuments({ joinedAt: { $gte: thisMonth.start, $lt: thisMonth.end } }),
       User.countDocuments({ joinedAt: { $gte: lastMonth.start, $lt: lastMonth.end } }),
@@ -127,12 +168,32 @@ export class AdminPanelService {
       Transaction.aggregate([
         {
           $match: {
+            type: 'COMMISSION_EARNED',
+            status: 'CONFIRMED',
+            timestamp: { $gte: thisMonth.start, $lt: thisMonth.end },
+          },
+        },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$lockedAmount', 0] } } } },
+      ]),
+      Transaction.aggregate([
+        {
+          $match: {
             type: { $in: ['PURCHASE', 'UPGRADE'] },
             status: 'CONFIRMED',
             timestamp: { $gte: lastMonth.start, $lt: lastMonth.end },
           },
         },
         { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+      Transaction.aggregate([
+        {
+          $match: {
+            type: 'COMMISSION_EARNED',
+            status: 'CONFIRMED',
+            timestamp: { $gte: lastMonth.start, $lt: lastMonth.end },
+          },
+        },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$lockedAmount', 0] } } } },
       ]),
       hntrContract.treasuryWallet(),
       hntrContract.leadershipWallet(),
@@ -141,10 +202,11 @@ export class AdminPanelService {
       hntrContract.companyWallet(),
     ]);
 
-    const totalVolume = volumeAgg[0]?.total ?? 0;
+    // Membership spend + locked commission share (liquid commissions stay under Total Commissions).
+    const totalVolume = (volumeAgg[0]?.total ?? 0) + (lockedVolumeAgg[0]?.total ?? 0);
     const totalCommissions = commissionAgg[0]?.total ?? 0;
-    const thisMonthVol = thisMonthVolume[0]?.total ?? 0;
-    const lastMonthVol = lastMonthVolume[0]?.total ?? 0;
+    const thisMonthVol = (thisMonthVolume[0]?.total ?? 0) + (thisMonthLockedVolume[0]?.total ?? 0);
+    const lastMonthVol = (lastMonthVolume[0]?.total ?? 0) + (lastMonthLockedVolume[0]?.total ?? 0);
 
     const [treasuryBal, leadershipBal, achievementBal, poolBal, companyBal] = await Promise.all([
       readWalletStablecoinBalances(String(treasuryAddress)),
@@ -179,17 +241,17 @@ export class AdminPanelService {
         { title: 'Total Users', value: totalUsers, subValue: `${pctChange(thisMonthUsers, lastMonthUsers)} this month` },
         {
           title: 'Total Volume',
-          value: `$${(totalVolume / 1_000_000).toFixed(1)}M`.replace('.0M', 'M'),
+          value: formatMetricUsd(totalVolume),
           subValue: `${pctChange(thisMonthVol, lastMonthVol)} this month`,
         },
         {
           title: 'Total Commissions',
-          value: `$${(totalCommissions / 1_000_000).toFixed(2)}M`,
+          value: formatMetricUsd(totalCommissions),
           subValue: commissionPct,
         },
         {
           title: 'Treasury Balance',
-          value: `$${(treasuryTotal / 1_000_000).toFixed(2)}M`,
+          value: formatMetricUsd(treasuryTotal),
           subValue: companyCutPct,
         },
         { title: 'Sold Memberships', value: soldMemberships, subValue: 'All tiers' },
@@ -326,21 +388,68 @@ export class AdminPanelService {
       throw new AdminPanelError('INVALID_RANK', `Invalid rank. Allowed: ${VALID_RANKS.join(', ')}`);
     }
 
-    const update: Record<string, unknown> = {};
-    if (tier !== undefined) update.tierOverride = tier === user.tier ? null : tier;
-    if (rank !== undefined) update.rankOverride = rank === user.rank ? null : rank;
+    const previousRank = user.rank;
+    const previousTier = user.tier;
+    const nextTier = tier !== undefined ? tier : user.tier;
+    const nextRank = rank !== undefined ? rank : user.rank;
+
+    // Write through to User — network/rewards APIs read User.rank / User.tier directly.
+    user.tier = nextTier as typeof user.tier;
+    user.rank = nextRank as typeof user.rank;
+    await user.save();
 
     const override = await AdminUserOverride.findOneAndUpdate(
       { username: username.toLowerCase() },
-      { $set: update },
+      {
+        $set: {
+          tierOverride: nextTier !== previousTier ? nextTier : null,
+          rankOverride: nextRank !== previousRank ? nextRank : null,
+        },
+      },
       { upsert: true, new: true },
     );
 
+    if (rank !== undefined && nextRank !== previousRank) {
+      try {
+        await RewardsService.enqueueAchievementBonuses(user, previousRank, nextRank);
+      } catch (err: unknown) {
+        logger.error(
+          `Failed to enqueue achievement bonuses after admin rank override for ${username}: ${
+            err instanceof Error ? err.message : err
+          }`,
+        );
+      }
+
+      try {
+        const { NotificationService } = await import('./notification.service');
+        const shares = getLeadershipShares(nextRank);
+        await NotificationService.createQuiet({
+          walletAddress: user.walletAddress,
+          type: 'RANK_UP',
+          title: `Rank upgraded to ${nextRank}`,
+          sub:
+            shares > 0
+              ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool.`
+              : `Keep growing — Hunter rank and above unlock leadership pool shares.`,
+          link: 'VIEW NETWORK',
+          meta: { previousRank, newRank: nextRank, shares, source: 'admin_override' },
+        });
+      } catch (err: unknown) {
+        logger.error(
+          `Failed to notify rank override for ${username}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
     return {
       username: user.username,
-      tier: override.tierOverride || user.tier,
-      rank: override.rankOverride || user.rank,
-      message: 'User profile overrides saved.',
+      tier: user.tier,
+      rank: user.rank,
+      previousRank,
+      previousTier,
+      tierOverride: override.tierOverride ?? null,
+      rankOverride: override.rankOverride ?? null,
+      message: 'User profile updated.',
     };
   }
 
@@ -444,7 +553,7 @@ export class AdminPanelService {
       throw new AdminPanelError('INVALID_WALLET', 'Unknown wallet key.');
     }
 
-    const addressMap: Record<string, () => Promise<string>> = {
+    const addressMap: Record<(typeof validKeys)[number], () => Promise<string>> = {
       treasury: () => hntrContract.treasuryWallet(),
       leadership: () => hntrContract.leadershipWallet(),
       achievement: () => hntrContract.achievementWallet(),
@@ -452,48 +561,141 @@ export class AdminPanelService {
       company: () => hntrContract.companyWallet(),
     };
 
-    const walletAddress = String(await addressMap[walletKey]()).toLowerCase();
-
-    const query = {
-      $or: [
-        { walletAddress: walletAddress },
-        { type: { $in: ['COMMISSION_EARNED'] }, lockedAmount: { $gt: 0 } },
-      ],
-    };
-
-    if (walletKey === 'pool') {
-      const [total, rows] = await Promise.all([
-        Transaction.countDocuments({ lockedAmount: { $gt: 0 } }),
-        Transaction.find({ lockedAmount: { $gt: 0 } }).sort({ timestamp: -1 }).skip(skip).limit(limit).lean(),
-      ]);
-      const items = rows.map((tx) => ({
-        id: String(tx._id),
-        type: tx.type,
-        walletAddress: tx.walletAddress,
-        amount: tx.lockedAmount,
-        token: tx.token,
-        timestamp: tx.timestamp,
-        txHash: tx.txHash,
-      }));
-      return paginatedResponse(items, total, page, limit);
-    }
-
-    const [total, rows] = await Promise.all([
-      Transaction.countDocuments({ walletAddress }),
-      Transaction.find({ walletAddress }).sort({ timestamp: -1 }).skip(skip).limit(limit).lean(),
+    const walletAddress = ethers.getAddress(String(await addressMap[walletKey as (typeof validKeys)[number]]()));
+    const fromBlock = Math.max(0, ENV.CONTRACT_DEPLOY_BLOCK || 0);
+    const [usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
+      hntrContract.usdt(),
+      hntrContract.usdc(),
+      getContractAmountDecimals(),
     ]);
 
-    const items = rows.map((tx) => ({
-      id: String(tx._id),
-      type: tx.type,
-      walletAddress: tx.walletAddress,
-      amount: tx.amount,
-      token: tx.token,
-      timestamp: tx.timestamp,
-      txHash: tx.txHash,
-    }));
+    const tokenMeta = [
+      { symbol: 'USDT', address: String(usdtAddress) },
+      { symbol: 'USDC', address: String(usdcAddress) },
+    ];
 
-    return paginatedResponse(items, total, page, limit);
+    const paddedWallet = padAddressTopic(walletAddress);
+
+    type LedgerRow = {
+      id: string;
+      direction: 'IN' | 'OUT';
+      type: string;
+      amount: number;
+      token: string;
+      counterparty: string;
+      timestamp: string;
+      txHash: string;
+      blockNumber: number;
+    };
+
+    const rows: LedgerRow[] = [];
+
+    for (const token of tokenMeta) {
+      try {
+        const [inLogs, outLogs] = await Promise.all([
+          getLogsViaEtherscan({
+            address: token.address,
+            topics: [ERC20_TRANSFER_TOPIC, undefined, paddedWallet],
+            fromBlock,
+          }),
+          getLogsViaEtherscan({
+            address: token.address,
+            topics: [ERC20_TRANSFER_TOPIC, paddedWallet, undefined],
+            fromBlock,
+          }),
+        ]);
+
+        for (const log of inLogs) {
+          const amount = Number(ethers.formatUnits(BigInt(log.data || '0x0'), amountDecimals));
+          const from = log.topics[1] ? ethers.getAddress(`0x${log.topics[1].slice(26)}`) : ethers.ZeroAddress;
+          rows.push({
+            id: `${log.transactionHash}-${log.logIndex}-in`,
+            direction: 'IN',
+            type: 'Transfer In',
+            amount: Number(amount.toFixed(6)),
+            token: token.symbol,
+            counterparty: from.toLowerCase(),
+            timestamp: new Date((log.timeStamp || 0) * 1000).toISOString(),
+            txHash: log.transactionHash,
+            blockNumber: log.blockNumber,
+          });
+        }
+
+        for (const log of outLogs) {
+          const amount = Number(ethers.formatUnits(BigInt(log.data || '0x0'), amountDecimals));
+          const to = log.topics[2] ? ethers.getAddress(`0x${log.topics[2].slice(26)}`) : ethers.ZeroAddress;
+          rows.push({
+            id: `${log.transactionHash}-${log.logIndex}-out`,
+            direction: 'OUT',
+            type: 'Transfer Out',
+            amount: Number(amount.toFixed(6)),
+            token: token.symbol,
+            counterparty: to.toLowerCase(),
+            timestamp: new Date((log.timeStamp || 0) * 1000).toISOString(),
+            txHash: log.transactionHash,
+            blockNumber: log.blockNumber,
+          });
+        }
+      } catch (err: any) {
+        logger.warn(`Failed fetching ${token.symbol} transfers for ${walletKey}: ${err.message}`);
+      }
+    }
+
+    // Fallback for pool wallet: also surface locked commission accruals from DB
+    // when Etherscan has no token-transfer history yet.
+    if (walletKey === 'pool' && rows.length === 0) {
+      const [total, dbRows] = await Promise.all([
+        Transaction.countDocuments({ lockedAmount: { $gt: 0 }, status: 'CONFIRMED' }),
+        Transaction.find({ lockedAmount: { $gt: 0 }, status: 'CONFIRMED' })
+          .sort({ timestamp: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+      ]);
+      const items = dbRows.map((tx) => ({
+        id: String(tx._id),
+        direction: 'IN' as const,
+        type: 'Locked Commission',
+        amount: tx.lockedAmount || 0,
+        token: (tx.token || 'USDT').toUpperCase().includes('0x') ? 'USDT' : String(tx.token || 'USDT').toUpperCase(),
+        counterparty: tx.walletAddress,
+        timestamp: new Date(tx.timestamp).toISOString(),
+        txHash: tx.txHash || '',
+        blockNumber: 0,
+      }));
+      return {
+        walletKey,
+        walletAddress: walletAddress.toLowerCase(),
+        source: 'database',
+        totals: {
+          inflow: items.reduce((s, i) => s + i.amount, 0),
+          outflow: 0,
+        },
+        ...paginatedResponse(items, total, page, limit),
+      };
+    }
+
+    rows.sort((a, b) => {
+      const ta = new Date(a.timestamp).getTime();
+      const tb = new Date(b.timestamp).getTime();
+      if (tb !== ta) return tb - ta;
+      return b.blockNumber - a.blockNumber;
+    });
+
+    const inflow = rows.filter((r) => r.direction === 'IN').reduce((s, r) => s + r.amount, 0);
+    const outflow = rows.filter((r) => r.direction === 'OUT').reduce((s, r) => s + r.amount, 0);
+    const pageItems = rows.slice(skip, skip + limit);
+
+    return {
+      walletKey,
+      walletAddress: walletAddress.toLowerCase(),
+      source: 'blockchain',
+      totals: {
+        inflow: Number(inflow.toFixed(2)),
+        outflow: Number(outflow.toFixed(2)),
+      },
+      ...paginatedResponse(pageItems, rows.length, page, limit),
+    };
   }
 
   static async getLeadershipPreview() {
@@ -505,28 +707,38 @@ export class AdminPanelService {
       .lean();
 
     let totalShares = 0;
-    const hunters = eligibleUsers.map((u) => {
-      const shares = getLeadershipShares(u.rank);
-      totalShares += shares;
-      return { username: u.username, rank: u.rank, shares };
-    });
+    const hunters = eligibleUsers
+      .map((u) => {
+        const shares = getLeadershipShares(u.rank);
+        totalShares += shares;
+        return {
+          username: u.username,
+          rank: u.rank,
+          shares,
+          walletAddress: u.walletAddress,
+        };
+      })
+      .sort((a, b) => b.shares - a.shares);
+
+    const withEstimates = hunters.map((h) => ({
+      ...h,
+      estimatedPayoutUSD:
+        totalShares > 0 ? Number(((balances.totalUsd * h.shares) / totalShares).toFixed(2)) : 0,
+    }));
 
     return {
       poolBalanceUSD: balances.totalUsd,
       poolTokens: balances.tokens,
+      leadershipWallet: String(leadershipWallet).toLowerCase(),
       eligibleCount: eligibleUsers.length,
-      eligibleUsers: hunters,
+      eligibleUsers: withEstimates,
       totalShares,
     };
   }
 
   static async distributeLeadership() {
-    const payouts = await RewardsService.calculateMonthlyLeadershipPool();
-    return {
-      payouts,
-      paid: payouts.filter((p: { status?: string }) => p.status === 'PAID').length,
-      failed: payouts.filter((p: { status?: string }) => p.status === 'FAILED').length,
-    };
+    // Same entrypoint as the 1st-of-month cron (`0 0 1 * *`).
+    return runMonthlyLeadershipPayout();
   }
 
   static async distributeAchievement() {
@@ -552,12 +764,20 @@ export class AdminPanelService {
     }
   }
 
-  static async getOverdueCommissionsWithAmounts(token = 'USDT', page = 1, limit = 10, skip = 0) {
+  static async getOverdueCommissionsWithAmounts(
+    token = 'USDT',
+    page = 1,
+    limit = 10,
+    skip = 0,
+    claimFilter: 'all' | 'never' | 'overdue_30d' = 'all',
+  ) {
     const result = await this.getOverdueCommissions(token);
     if (!result.overdue?.length) {
       return {
         ...result,
         totalUnclaimedUSD: 0,
+        counts: { all: 0, never: 0, overdue_30d: 0 },
+        filter: claimFilter,
         ...paginatedResponse([], 0, page, limit),
       };
     }
@@ -565,26 +785,55 @@ export class AdminPanelService {
     const tokenAddress =
       result.tokenAddress ||
       (token.toUpperCase() === 'USDC' ? await hntrContract.usdc() : await hntrContract.usdt());
-    const amountDecimals = await getContractAmountDecimals();
+    const [amountDecimals, gracePeriod] = await Promise.all([
+      getContractAmountDecimals(),
+      hntrContract.CLAIM_GRACE_PERIOD().then((v: bigint) => Number(v)).catch(() => 30 * 24 * 60 * 60),
+    ]);
+
+    const nowSec = Math.floor(Date.now() / 1000);
 
     const allWallets = await Promise.all(
       result.overdue.map(async (address) => {
-        const claimable = await hntrContract.withdrawableCommissions(address, tokenAddress);
+        const [claimable, lastClaimedRaw] = await Promise.all([
+          hntrContract.withdrawableCommissions(address, tokenAddress),
+          hntrContract.lastClaimedAt(address, tokenAddress),
+        ]);
         const amount = Number(ethers.formatUnits(claimable, amountDecimals));
+        const lastClaimedAt = Number(lastClaimedRaw);
+        const neverClaimed = lastClaimedAt === 0;
+        const claimStatus: 'never' | 'overdue_30d' = neverClaimed ? 'never' : 'overdue_30d';
+        const daysSinceClaim = neverClaimed
+          ? null
+          : Math.floor((nowSec - lastClaimedAt) / (24 * 60 * 60));
         const user = await User.findOne({ walletAddress: address.toLowerCase() }).select('username').lean();
         return {
           walletAddress: address,
           username: user?.username || address.slice(0, 8) + '...',
           unclaimedUSD: amount,
+          claimStatus,
+          lastClaimedAt: neverClaimed ? null : new Date(lastClaimedAt * 1000).toISOString(),
+          daysSinceClaim,
+          gracePeriodDays: Math.round(gracePeriod / (24 * 60 * 60)),
         };
       }),
     );
 
-    const totalUnclaimedUSD = allWallets.reduce((sum, w) => sum + w.unclaimedUSD, 0);
-    const paginated = paginatedResponse(allWallets.slice(skip, skip + limit), allWallets.length, page, limit);
+    const counts = {
+      all: allWallets.length,
+      never: allWallets.filter((w) => w.claimStatus === 'never').length,
+      overdue_30d: allWallets.filter((w) => w.claimStatus === 'overdue_30d').length,
+    };
+
+    const filtered =
+      claimFilter === 'all' ? allWallets : allWallets.filter((w) => w.claimStatus === claimFilter);
+
+    const totalUnclaimedUSD = filtered.reduce((sum, w) => sum + w.unclaimedUSD, 0);
+    const paginated = paginatedResponse(filtered.slice(skip, skip + limit), filtered.length, page, limit);
 
     return {
       ...result,
+      filter: claimFilter,
+      counts,
       totalUnclaimedUSD: Number(totalUnclaimedUSD.toFixed(2)),
       ...paginated,
     };

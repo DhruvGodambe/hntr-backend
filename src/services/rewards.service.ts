@@ -267,12 +267,19 @@ export class RewardsService {
   static async getAchievementStatus(walletAddress: string) {
     const address = walletAddress.toLowerCase();
     const user = await User.findOne({ walletAddress: address });
+    if (user) {
+      const { NetworkService } = await import('./network.service');
+      await NetworkService.syncAdminOverrides(user);
+    }
+
+    // Fetch after sync so newly enqueued PENDING bonuses show on the Rank Bonus card.
     const bonuses = await AchievementBonus.find({ walletAddress: address })
       .sort({ createdAt: -1 })
       .lean();
 
     const achievementWallet = await hntrContract.achievementWallet();
     const walletBalances = await this.getPoolWalletBalances(achievementWallet);
+    const poolBalanceUSD = walletBalances.totalUSD;
 
     const lifetimePaidUSD = bonuses
       .filter((b) => b.status === 'PAID')
@@ -282,9 +289,34 @@ export class RewardsService {
     const hasPending = pendingBonuses.length > 0;
     const hasPaid = lifetimePaidUSD > 0;
 
+    // How much of the pending queue this wallet could cover right now (oldest-first, full amounts only).
+    let payableNowUSD = 0;
+    let remainingPool = poolBalanceUSD;
+    const pendingOldestFirst = [...pendingBonuses].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+    for (const b of pendingOldestFirst) {
+      if (remainingPool + 1e-9 >= b.amountUSD) {
+        payableNowUSD += b.amountUSD;
+        remainingPool -= b.amountUSD;
+      }
+    }
+    const waitingOnFundingUSD = Math.max(0, pendingUSD - payableNowUSD);
+
+    const pendingBreakdown = pendingOldestFirst
+      .map((b) => `${b.rank} $${Number(b.amountUSD).toFixed(2)}`)
+      .join(' + ');
+
     let message: string;
     if (hasPending) {
-      message = `$${pendingUSD.toFixed(2)} pending — waiting for achievement pool funding. Auto-deposited when funded.`;
+      message =
+        `$${pendingUSD.toFixed(2)} pending` +
+        (pendingBreakdown ? ` (${pendingBreakdown})` : '') +
+        `. $${payableNowUSD.toFixed(2)} can pay from the current $${poolBalanceUSD.toFixed(2)} pool` +
+        (waitingOnFundingUSD > 0
+          ? `; $${waitingOnFundingUSD.toFixed(2)} waits until the achievement wallet is topped up.`
+          : '.') +
+        ` Paid oldest-first in full (no partials) by the daily cron.`;
     } else if (hasPaid) {
       message = `$${lifetimePaidUSD.toFixed(2)} lifetime rank bonuses auto-deposited to your wallet.`;
     } else {
@@ -299,11 +331,13 @@ export class RewardsService {
       bonusTable: RANK_ACHIEVEMENT_BONUSES,
       lifetimePaidUSD: Number(lifetimePaidUSD.toFixed(2)),
       pendingUSD: Number(pendingUSD.toFixed(2)),
+      payableNowUSD: Number(payableNowUSD.toFixed(2)),
+      waitingOnFundingUSD: Number(waitingOnFundingUSD.toFixed(2)),
       hasPending,
       hasPaid,
       message,
       walletBalances,
-      poolBalanceUSD: walletBalances.totalUSD,
+      poolBalanceUSD,
       bonuses,
       lastBonus: bonuses[0] || null,
     };
@@ -318,6 +352,10 @@ export class RewardsService {
   static async getLeadershipStatus(walletAddress: string) {
     const address = walletAddress.toLowerCase();
     const user = await User.findOne({ walletAddress: address });
+    if (user) {
+      const { NetworkService } = await import('./network.service');
+      await NetworkService.syncAdminOverrides(user);
+    }
     const rank = user?.rank || 'None';
     const shares = getLeadershipShares(rank);
     const hasShares = shares > 0;

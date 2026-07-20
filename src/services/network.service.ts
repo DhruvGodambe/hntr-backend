@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import User, { IUser } from '../models/User';
+import AdminUserOverride from '../models/AdminUserOverride';
 import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank } from '../constants';
 import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
@@ -435,6 +436,60 @@ export class NetworkService {
   }
 
   /**
+   * Applies any pending AdminUserOverride onto the User document and enqueues
+   * rank bonuses if the override raised rank. Fixes profiles that were only
+   * patched in the override collection before write-through existed.
+   */
+  static async syncAdminOverrides(user: {
+    username: string;
+    walletAddress: string;
+    rank: string;
+    tier: string;
+    save: () => Promise<unknown>;
+  }): Promise<{ rank: string; tier: string }> {
+    const override = await AdminUserOverride.findOne({
+      username: user.username.toLowerCase(),
+    }).lean();
+
+    if (!override) {
+      return { rank: user.rank || 'None', tier: user.tier || 'None' };
+    }
+
+    const nextRank = override.rankOverride || user.rank || 'None';
+    const nextTier = override.tierOverride || user.tier || 'None';
+    const previousRank = user.rank || 'None';
+    let changed = false;
+
+    if (override.rankOverride && override.rankOverride !== user.rank) {
+      (user as { rank: string }).rank = override.rankOverride;
+      changed = true;
+    }
+    if (override.tierOverride && override.tierOverride !== user.tier) {
+      (user as { tier: string }).tier = override.tierOverride;
+      changed = true;
+    }
+
+    if (changed) {
+      await user.save();
+      if (nextRank !== previousRank) {
+        try {
+          const { RewardsService } = await import('./rewards.service');
+          await RewardsService.enqueueAchievementBonuses(user, previousRank, nextRank);
+        } catch (err: any) {
+          logger.error(
+            `Failed to enqueue achievement bonuses while syncing overrides for ${user.username}: ${err.message}`,
+          );
+        }
+      }
+      logger.info(
+        `Synced admin overrides onto ${user.username}: rank ${previousRank} -> ${nextRank}, tier -> ${nextTier}`,
+      );
+    }
+
+    return { rank: nextRank, tier: nextTier };
+  }
+
+  /**
    * Combines on-chain commission state (source of truth for money) with the
    * off-chain profile/rank (source of truth for the MLM tree) into the single
    * payload the network page and dashboard right rail both need.
@@ -474,7 +529,10 @@ export class NetworkService {
 
     const totalRewarded = await this.getLifetimeCommissionsEarned(address, [usdtAddress, usdcAddress], amountDecimals);
 
-    const rank = user?.rank || 'None';
+    const synced = user
+      ? await this.syncAdminOverrides(user)
+      : { rank: 'None', tier: 'None' };
+    const rank = synced.rank;
     const teamVolume = user?.teamVolume || 0;
     const progress = this.getRankProgress(rank, teamVolume, user?.legVolumes);
 

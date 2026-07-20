@@ -4,6 +4,39 @@ import { PointsService } from '../services/points.service';
 import mongoose from 'mongoose';
 
 /**
+ * Same work as the 1st-of-month leadership cron. Safe to call on demand from admin.
+ */
+export async function runMonthlyLeadershipPayout() {
+  if (mongoose.connection.readyState !== 1) {
+    throw new Error('Database not connected. Cannot run leadership payout.');
+  }
+
+  console.log('\n======================================================');
+  console.log(`⏰ [LEADERSHIP PAYOUT] Starting (manual or cron)...`);
+  console.log(`Date: ${new Date().toISOString()}`);
+  console.log('======================================================');
+
+  const payouts = await RewardsService.calculateMonthlyLeadershipPool();
+  const paid = payouts.filter((p) => p.status === 'PAID');
+  const failed = payouts.filter((p) => p.status === 'FAILED');
+
+  console.log(
+    `✅ [LEADERSHIP PAYOUT COMPLETE] created ${payouts.length} ` +
+      `(${paid.length} paid, ${failed.length} failed).`,
+  );
+  for (const p of paid) {
+    console.log(`   • ${p.username}: $${p.amountUSDC.toFixed(2)} (${p.shares} shares, ${p.rank})`);
+  }
+
+  return {
+    payouts,
+    paid: paid.length,
+    failed: failed.length,
+    month: new Date().toISOString().slice(0, 7),
+  };
+}
+
+/**
  * Initializes all background cron jobs for the HNTR backend.
  */
 export function initCronJobs() {
@@ -14,28 +47,8 @@ export function initCronJobs() {
   // (Hunter=1, Elite Hunter=3, Master Hunter=7, Legend Hunter=15). Users below Hunter
   // have 0 shares and are skipped.
   cron.schedule('0 0 1 * *', async () => {
-    console.log('\n======================================================');
-    console.log(`⏰ [CRON START] Executing Monthly Leadership Payout Generation...`);
-    console.log(`Date: ${new Date().toISOString()}`);
-    console.log('======================================================');
-
     try {
-      if (mongoose.connection.readyState !== 1) {
-        console.log('⚠️ Database not connected. Skipping leadership cron job.');
-        return;
-      }
-
-      const payouts = await RewardsService.calculateMonthlyLeadershipPool();
-      const paid = payouts.filter((p) => p.status === 'PAID');
-      const failed = payouts.filter((p) => p.status === 'FAILED');
-
-      console.log(
-        `✅ [CRON COMPLETE] Leadership payouts — created ${payouts.length} ` +
-          `(${paid.length} paid, ${failed.length} failed).`,
-      );
-      for (const p of paid) {
-        console.log(`   • ${p.username}: $${p.amountUSDC.toFixed(2)} (${p.shares} shares, ${p.rank})`);
-      }
+      await runMonthlyLeadershipPayout();
     } catch (error) {
       console.error(`❌ [CRON ERROR] Failed to generate leadership payouts:`, error);
     }

@@ -7,9 +7,8 @@ export const CONTRACT_ADDRESS = ENV.CONTRACT_ADDRESS;
 export const RPC_URL = ENV.RPC_URL;
 
 /**
- * Human-readable ABI kept in lockstep with IHNTRMembership.sol / HNTRMembership.sol.
- * If you change the contract's public interface, update this ABI (or better: wire in
- * the compiled artifact from `hntr/out/HNTRMembership.sol/HNTRMembership.json`).
+ * Human-readable ABI for the currently deployed Sepolia contract.
+ * Do not add pause / Ownable2Step / nonce / rescue APIs until that revision is redeployed.
  */
 export const contractABI = [
   'constructor(address _usdt, address _usdc)',

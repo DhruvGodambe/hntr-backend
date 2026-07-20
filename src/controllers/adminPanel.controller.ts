@@ -153,7 +153,11 @@ export class AdminPanelController {
   static async distributeLeadership(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const data = await AdminPanelService.distributeLeadership();
-      sendSuccess(res, data, `Leadership rewards distributed (${data.paid} paid, ${data.failed} failed).`);
+      sendSuccess(
+        res,
+        data,
+        `Leadership monthly cron completed (${data.paid} paid, ${data.failed} failed).`,
+      );
     } catch (error) {
       handlePanelError(error, res, next);
     }
@@ -181,8 +185,17 @@ export class AdminPanelController {
   static async getOverdueCommissions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const token = typeof req.query.token === 'string' ? req.query.token : 'USDT';
+      const rawFilter = typeof req.query.filter === 'string' ? req.query.filter.toLowerCase() : 'all';
+      const claimFilter =
+        rawFilter === 'never' || rawFilter === 'overdue_30d' || rawFilter === 'all' ? rawFilter : 'all';
       const { page, limit, skip } = parsePagination(req.query as Record<string, unknown>, { limit: 10 });
-      const data = await AdminPanelService.getOverdueCommissionsWithAmounts(token, page, limit, skip);
+      const data = await AdminPanelService.getOverdueCommissionsWithAmounts(
+        token,
+        page,
+        limit,
+        skip,
+        claimFilter,
+      );
       sendSuccess(res, data, `Found ${data.pagination?.total ?? 0} overdue wallet(s)`);
     } catch (error) {
       handlePanelError(error, res, next);
