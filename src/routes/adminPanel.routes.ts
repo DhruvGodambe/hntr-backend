@@ -33,9 +33,11 @@ router.post('/leadership/distribute', requireAdminPrivileged, AdminPanelControll
 router.post('/achievement/distribute', requireAdminPrivileged, AdminPanelController.distributeAchievement);
 router.get('/reports/rank-bonuses', AdminPanelController.getRankBonusReport);
 
-// Overdue commissions (privileged claim)
+// Overdue commissions — list is read-only; withdraws are signed in admin UI via ConnectKit
 router.get('/commissions/overdue', AdminPanelController.getOverdueCommissions);
+router.get('/company-wallet', AdminPanelController.getCompanyWallet);
 router.post('/commissions/claim', requireAdminPrivileged, AdminPanelController.claimCommissions);
+router.post('/commissions/record-withdraw', requireAdminPrivileged, AdminPanelController.recordCompanyWithdraw);
 
 // Volume recalc
 router.post('/volumes/recalculate', requireAdminPrivileged, AdminPanelController.recalculateVolumes);

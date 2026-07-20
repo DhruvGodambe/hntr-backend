@@ -287,7 +287,16 @@ export class AdminPanelService {
 
     const items = rows.map((tx) => ({
       id: String(tx._id),
-      type: tx.type === 'COMMISSION_EARNED' ? 'Commission Earned' : tx.type === 'PURCHASE' ? 'Membership Purchase' : tx.type === 'UPGRADE' ? 'Membership Upgrade' : 'Withdrawal',
+      type:
+        tx.type === 'COMMISSION_EARNED'
+          ? 'Commission Earned'
+          : tx.type === 'PURCHASE'
+            ? 'Membership Purchase'
+            : tx.type === 'UPGRADE'
+              ? 'Membership Upgrade'
+              : tx.type === 'COMPANY_WALLET_WITHDRAWN'
+                ? 'Admin Withdrawal'
+                : 'Withdrawal',
       user: userByWallet.get(tx.walletAddress.toLowerCase()) || tx.walletAddress.slice(0, 6) + '...',
       walletAddress: tx.walletAddress,
       amount: tx.amount,
@@ -758,10 +767,19 @@ export class AdminPanelService {
       return await CompanyWalletService.getOverdueWallets(token);
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('not configured')) {
-        return { token, tokenAddress: '', overdue: [], count: 0, configured: false };
+        return { token, tokenAddress: '', overdue: [], count: 0, configured: false, companyWallet: '' };
       }
       throw err;
     }
+  }
+
+  static async getCompanyWalletInfo() {
+    const address = await CompanyWalletService.getCompanyWalletAddress();
+    return {
+      address,
+      // Backend private key is optional now — admin UI signs withdraws via ConnectKit.
+      backendSignerConfigured: Boolean(ENV.COMPANY_WALLET_PRIVATE_KEY),
+    };
   }
 
   static async getOverdueCommissionsWithAmounts(
@@ -775,6 +793,7 @@ export class AdminPanelService {
     if (!result.overdue?.length) {
       return {
         ...result,
+        configured: true,
         totalUnclaimedUSD: 0,
         counts: { all: 0, never: 0, overdue_30d: 0 },
         filter: claimFilter,
@@ -832,6 +851,7 @@ export class AdminPanelService {
 
     return {
       ...result,
+      configured: true,
       filter: claimFilter,
       counts,
       totalUnclaimedUSD: Number(totalUnclaimedUSD.toFixed(2)),
@@ -844,6 +864,12 @@ export class AdminPanelService {
     for (const wallet of walletAddresses) {
       try {
         const result = await CompanyWalletService.withdrawForUser(wallet, token);
+        await this.recordCompanyWalletWithdraw({
+          walletAddress: wallet,
+          token,
+          txHash: result.txHash,
+          amount: result.amount,
+        });
         results.push({ walletAddress: wallet, success: true, ...result });
       } catch (err: unknown) {
         results.push({
@@ -854,6 +880,80 @@ export class AdminPanelService {
       }
     }
     return results;
+  }
+
+  /**
+   * Persists an admin company-wallet commission withdrawal as COMPANY_WALLET_WITHDRAWN.
+   * Used after ConnectKit-signed withdrawCompanyWallet txs (and backend signer path).
+   */
+  static async recordCompanyWalletWithdraw(params: {
+    walletAddress: string;
+    token: string;
+    txHash: string;
+    amount: number;
+  }) {
+    const walletAddress = params.walletAddress.toLowerCase();
+    const txHash = params.txHash.toLowerCase();
+    const tokenRaw = params.token.trim();
+    const token = tokenRaw.startsWith('0x')
+      ? tokenRaw.toLowerCase()
+      : tokenRaw.toUpperCase() === 'USDC'
+        ? String(await hntrContract.usdc()).toLowerCase()
+        : String(await hntrContract.usdt()).toLowerCase();
+
+    if (!ethers.isHexString(txHash, 32)) {
+      throw new AdminPanelError('INVALID_TX', 'Invalid transaction hash.');
+    }
+    if (!ethers.isAddress(walletAddress)) {
+      throw new AdminPanelError('INVALID_WALLET', 'Invalid wallet address.');
+    }
+    if (!Number.isFinite(params.amount) || params.amount < 0) {
+      throw new AdminPanelError('INVALID_AMOUNT', 'Invalid withdrawal amount.');
+    }
+
+    const existing = await Transaction.findOne({
+      txHash,
+      walletAddress,
+      type: 'COMPANY_WALLET_WITHDRAWN',
+      token,
+    });
+    if (existing) {
+      return {
+        id: String(existing._id),
+        walletAddress,
+        txHash,
+        token,
+        amount: existing.amount,
+        type: 'COMPANY_WALLET_WITHDRAWN' as const,
+        status: existing.status,
+        duplicate: true,
+      };
+    }
+
+    const created = await Transaction.create({
+      txHash,
+      walletAddress,
+      type: 'COMPANY_WALLET_WITHDRAWN',
+      token,
+      amount: Number(params.amount.toFixed(6)),
+      status: 'CONFIRMED',
+      timestamp: new Date(),
+    });
+
+    logger.info(
+      `Recorded COMPANY_WALLET_WITHDRAWN for ${walletAddress}: -$${params.amount.toFixed(2)} tx=${txHash}`,
+    );
+
+    return {
+      id: String(created._id),
+      walletAddress,
+      txHash,
+      token,
+      amount: created.amount,
+      type: 'COMPANY_WALLET_WITHDRAWN' as const,
+      status: 'CONFIRMED' as const,
+      duplicate: false,
+    };
   }
 
   static async recalculateVolumes(username: string) {

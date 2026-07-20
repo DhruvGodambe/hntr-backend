@@ -28,39 +28,46 @@ async function resolveTokenAddress(tokenSymbol: string): Promise<string> {
 
 export class CompanyWalletService {
   /**
+   * On-chain company wallet address (public view). Used by admin UI to verify
+   * the ConnectKit-connected wallet before signing withdrawCompanyWallet txs.
+   */
+  static async getCompanyWalletAddress(): Promise<string> {
+    const address = await hntrContract.companyWallet();
+    return String(address).toLowerCase();
+  }
+
+  /**
    * Returns all wallets that have withdrawable commissions and are overdue for the
-   * given token (last claim > 30 days ago or never claimed). Must be called with the
-   * on-chain company wallet signer because `getOverdueWallets` is access-controlled.
+   * given token (last claim > 30 days ago or never claimed).
+   * Uses eth_call with `from = companyWallet` so the onlyCompanyWallet view gate
+   * passes without needing the company private key on the server.
    */
   static async getOverdueWallets(tokenSymbol: string): Promise<{
     token: string;
     tokenAddress: string;
     overdue: string[];
     count: number;
+    companyWallet: string;
   }> {
-    if (!companyWallet || !hntrContractWithCompanySigner) {
-      throw new CompanyWalletError(
-        'NOT_CONFIGURED',
-        'Company wallet private key is not configured in the backend.',
-        503,
-      );
-    }
-
     const tokenAddress = await resolveTokenAddress(tokenSymbol);
-    const overdue: string[] = await (hntrContractWithCompanySigner as any).getOverdueWallets(tokenAddress);
+    const companyAddress = await this.getCompanyWalletAddress();
+
+    const overdue: string[] = await hntrContract.getOverdueWallets.staticCall(tokenAddress, {
+      from: companyAddress,
+    });
 
     return {
       token: tokenSymbol.toUpperCase(),
-      tokenAddress,
+      tokenAddress: String(tokenAddress).toLowerCase(),
       overdue: overdue.map((a) => a.toLowerCase()),
       count: overdue.length,
+      companyWallet: companyAddress,
     };
   }
 
   /**
-   * Executes `withdrawCompanyWallet(user, token)` from the company wallet. This is
-   * only allowed when the user's last claim is at least 30 days old (or never claimed).
-   * Funds are sent directly to the user, not to the company wallet.
+   * Executes `withdrawCompanyWallet(user, token)` from the backend company signer.
+   * Prefer admin-panel client-side ConnectKit signing; this remains for secret admin scripts.
    */
   static async withdrawForUser(walletAddress: string, tokenSymbol: string): Promise<{
     txHash: string;
@@ -69,7 +76,7 @@ export class CompanyWalletService {
     if (!companyWallet || !hntrContractWithCompanySigner) {
       throw new CompanyWalletError(
         'NOT_CONFIGURED',
-        'Company wallet private key is not configured in the backend.',
+        'Company wallet private key is not configured in the backend. Connect the company wallet in the admin UI instead.',
         503,
       );
     }
@@ -89,15 +96,6 @@ export class CompanyWalletService {
 
     const amount = Number(ethers.formatUnits(claimable, amountDecimals));
     return { txHash: tx.hash as string, amount };
-  }
-
-  /**
-   * Reads the configured on-chain company wallet address. Useful for admin UIs and
-   * health checks.
-   */
-  static async getCompanyWalletAddress(): Promise<string | null> {
-    if (!companyWallet) return null;
-    return companyWallet.address.toLowerCase();
   }
 
   /**

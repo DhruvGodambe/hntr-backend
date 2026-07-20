@@ -697,6 +697,21 @@ export class BlockchainService {
       throw err;
     }
 
+    await NotificationService.createQuiet({
+      walletAddress: normalizedWallet,
+      type: 'COMMISSION_CLAIMED',
+      title: 'Commissions withdrawn (admin)',
+      sub: `$${withdrawn.toFixed(2)} sent to your wallet by the company wallet.`,
+      link: 'VIEW TRANSACTION',
+      meta: {
+        amount: withdrawn,
+        txHash: normalizedHash,
+        token: normalizedToken,
+        companyWallet: companyWalletAddress.toLowerCase(),
+        source: 'company_wallet',
+      },
+    });
+
     logger.info(
       `Stored COMPANY_WALLET_WITHDRAWN for ${walletAddress}: -$${withdrawn.toFixed(2)} (companyWallet ${companyWalletAddress})`,
     );
