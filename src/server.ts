@@ -8,6 +8,7 @@ import { errorHandler } from './middlewares/errorHandler';
 import userRoutes from './routes/users.routes';
 import networkRoutes from './routes/network.routes';
 import adminRoutes from './routes/admin.routes';
+import adminPanelRoutes from './routes/adminPanel.routes';
 import authRoutes from './routes/auth.routes';
 import membershipRoutes from './routes/membership.routes';
 import { BlockchainService } from './services/blockchain.service';
@@ -25,6 +26,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/network', networkRoutes);
 app.use('/api/membership', membershipRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin', adminPanelRoutes);
 
 // Healthcheck
 app.get('/health', (req, res) => {

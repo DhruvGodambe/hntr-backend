@@ -37,4 +37,7 @@ export const ENV = {
   // routes that move real funds (e.g. manually triggering the leadership payout run).
   // Left empty by default, which makes those routes always reject.
   ADMIN_SECRET: process.env.ADMIN_SECRET || '',
+  // Password for the admin panel web UI (POST /api/admin/auth/login).
+  ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
+  ADMIN_TOKEN_TTL_SECONDS: Number(process.env.ADMIN_TOKEN_TTL_SECONDS || 3600),
 };
