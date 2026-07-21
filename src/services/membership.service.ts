@@ -9,10 +9,18 @@ import {
   companyWallet,
   SIGNATURE_TTL_SECONDS,
   provider,
+  getContractAmountDecimals,
 } from './contract.service';
 import { Tier, TIER_VOLUMES } from '../constants';
 import { logger } from '../utils/logger';
 import { findActivePendingRelay } from '../utils/staleTransactions';
+
+/** Format contract-scale amounts for UI (trim trailing zeros: 250.000000 → 250). */
+function formatAmountDue(raw: bigint, decimals: number): string {
+  const formatted = ethers.formatUnits(raw, decimals);
+  if (!formatted.includes('.')) return formatted;
+  return formatted.replace(/\.?0+$/, '');
+}
 
 const TIER_ORDER: Tier[] = [Tier.NONE, Tier.BRONZE, Tier.SILVER, Tier.GOLD, Tier.PLATINUM, Tier.DIAMOND];
 
@@ -104,11 +112,13 @@ export class MembershipService {
     const amountDue: bigint = BigInt(price) - BigInt(currentPrice);
 
     const erc20 = getErc20(tokenAddress);
-    const [allowance, balance, decimals, symbol] = await Promise.all([
+    // tierPrices / amountDue use the contract's internal scale (USDT-like 6), which can
+    // differ from ERC20.decimals() on mock tokens (often 18). Format with contract scale.
+    const [allowance, balance, symbol, contractDecimals] = await Promise.all([
       erc20.allowance(walletAddress, CONTRACT_ADDRESS),
       erc20.balanceOf(walletAddress),
-      erc20.decimals(),
       erc20.symbol().catch(() => tokenSymbol),
+      getContractAmountDecimals(),
     ]);
 
     return {
@@ -118,9 +128,9 @@ export class MembershipService {
       currentTier: tierIndexToName(currentTierIndex),
       tokenAddress,
       tokenSymbol: symbol,
-      decimals: Number(decimals),
+      decimals: contractDecimals,
       amountDueRaw: amountDue.toString(),
-      amountDueFormatted: ethers.formatUnits(amountDue, decimals),
+      amountDueFormatted: formatAmountDue(amountDue, contractDecimals),
       contractAddress: CONTRACT_ADDRESS,
       allowanceRaw: allowance.toString(),
       balanceRaw: balance.toString(),
