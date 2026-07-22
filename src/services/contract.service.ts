@@ -60,12 +60,14 @@ export const contractABI = [
   'error SafeERC20FailedOperation(address token)',
 ];
 
-/** Minimal ERC20 ABI used for pre-flight allowance/balance checks before relaying a tx. */
+/** Minimal ERC20 ABI used for balance/allowance checks and pool wallet transfers. */
 export const erc20ABI = [
   'function balanceOf(address account) view returns (uint256)',
   'function allowance(address owner, address spender) view returns (uint256)',
   'function decimals() view returns (uint8)',
   'function symbol() view returns (string)',
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function approve(address spender, uint256 amount) returns (bool)',
 ];
 
 export const provider = new ethers.JsonRpcProvider(RPC_URL);

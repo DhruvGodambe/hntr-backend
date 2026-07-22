@@ -105,7 +105,13 @@ export class NetworkService {
 
     for (const uname of ancestorsToFetch) {
       const found = parentUsers.find((p) => p.username === uname);
-      uplines.push(found ? found.walletAddress : '0x0000000000000000000000000000000000000000');
+      const wallet = found?.walletAddress?.trim();
+      // Admin root (and any missing wallet) must not pass an empty string on-chain.
+      uplines.push(
+        wallet && /^0x[a-fA-F0-9]{40}$/.test(wallet)
+          ? wallet
+          : '0x0000000000000000000000000000000000000000',
+      );
       ranks.push(this.toContractRankIndex(found?.rank || Rank.NONE));
     }
 

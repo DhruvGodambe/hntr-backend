@@ -1,8 +1,12 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export type UserAccountType = 'member' | 'admin';
+
 export interface IUser extends Document {
   username: string;
+  /** Empty for the system admin root (no linked wallet). */
   walletAddress: string;
+  type: UserAccountType;
   email?: string;
   phone?: string;
   sponsorUsername?: string | null;
@@ -25,8 +29,17 @@ const UserSchema: Schema = new Schema({
   },
   walletAddress: {
     type: String,
-    required: true,
+    // Admin root has no wallet; members still set a unique address at register.
+    required: false,
+    default: '',
     unique: true,
+    sparse: true,
+    index: true,
+  },
+  type: {
+    type: String,
+    enum: ['member', 'admin'],
+    default: 'member',
     index: true,
   },
   email: {

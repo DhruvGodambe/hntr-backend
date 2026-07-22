@@ -216,8 +216,8 @@ export class RewardsService {
           `Failed to pay achievement bonus to ${bonus.walletAddress}:`,
           e.message,
         );
-        bonus.status = 'FAILED';
-        await bonus.save();
+        // Keep PENDING so the next cron/manual run retries (e.g. RPC blips, gas).
+        // Only mark FAILED when we intentionally want to stop retries.
       }
     }
 

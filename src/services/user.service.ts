@@ -27,6 +27,7 @@ export class UserService {
     const newUser = new User({
       username,
       walletAddress: walletAddress.toLowerCase(),
+      type: 'member',
       email,
       phone,
       sponsorUsername,
@@ -51,6 +52,9 @@ export class UserService {
   }
 
   static async syncUserTierWithBlockchain(user: IUser): Promise<IUser> {
+    if (!user.walletAddress || user.type === 'admin') {
+      return user;
+    }
     try {
       const { hntrContract } = await import('./contract.service');
       const onChainData = await hntrContract.getUser(user.walletAddress);

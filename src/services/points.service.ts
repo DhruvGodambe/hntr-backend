@@ -145,6 +145,9 @@ export class PointsService {
    * Never delete-then-insert (that raced awardPoints and caused E11000).
    */
   static async recalculatePoints(walletAddress: string): Promise<number> {
+    if (!walletAddress || typeof walletAddress !== 'string' || !walletAddress.trim()) {
+      throw new Error('walletAddress is required');
+    }
     const normalizedWallet = walletAddress.toLowerCase();
 
     return withWalletLock(normalizedWallet, async () => {
@@ -270,7 +273,10 @@ export class PointsService {
     }
 
     this.reconcileAllInFlight = (async () => {
-      const wallets = await User.distinct('walletAddress');
+      const wallets = (await User.distinct('walletAddress')).filter(
+        (wallet): wallet is string =>
+          typeof wallet === 'string' && wallet.trim().length > 0,
+      );
       logger.info(`Recalculating HNTR points for ${wallets.length} wallets`);
 
       for (const wallet of wallets) {
