@@ -155,8 +155,8 @@ export class MembershipService {
   }
 
   /**
-   * Signs the commission-auth payload the contract verifies on purchase/upgrade.
-   * Must match HNTRMembership._verifyCommissionAuth hashing exactly.
+   * Signs the EIP-712 commission-auth payload the contract verifies on purchase/upgrade.
+   * Must match HNTRMembership._commissionAuthHash / COMMISSION_AUTH_TYPEHASH exactly.
    */
   private static async signCommissionAuth(params: {
     user: string;
@@ -176,24 +176,59 @@ export class MembershipService {
     }
 
     const network = await provider.getNetwork();
-    const structHash = ethers.keccak256(
+
+    const [nonce, epoch] = await Promise.all([
+      hntrContract.nonces(params.user),
+      hntrContract.signatureEpoch(),
+    ]);
+
+    const domain = {
+      name: 'HNTRMembership',
+      version: '1',
+      chainId: network.chainId,
+      verifyingContract: ethers.getAddress(CONTRACT_ADDRESS),
+    };
+
+    const types = {
+      CommissionAuth: [
+        { name: 'user', type: 'address' },
+        { name: 'tier', type: 'uint8' },
+        { name: 'uplinesHash', type: 'bytes32' },
+        { name: 'ranksHash', type: 'bytes32' },
+        { name: 'token', type: 'address' },
+        { name: 'deadline', type: 'uint256' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'signatureEpoch', type: 'uint256' },
+        { name: 'operation', type: 'bytes32' },
+      ],
+    };
+
+    const uplinesHash = ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(
-        ['address', 'uint8', 'address[]', 'uint8[]', 'address', 'uint256', 'uint256', 'address', 'bytes32'],
-        [
-          ethers.getAddress(params.user),
-          params.tierIndex,
-          params.uplines.map((a) => ethers.getAddress(a)),
-          params.ranks,
-          ethers.getAddress(params.tokenAddress),
-          params.deadline,
-          network.chainId,
-          ethers.getAddress(CONTRACT_ADDRESS),
-          params.operation === 'PURCHASE' ? PURCHASE_OP : UPGRADE_OP,
-        ],
+        ['address[]'],
+        [params.uplines.map((a) => ethers.getAddress(a))],
+      ),
+    );
+    const ranksHash = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ['uint8[]'],
+        [params.ranks],
       ),
     );
 
-    return companyWallet.signMessage(ethers.getBytes(structHash));
+    const value = {
+      user: ethers.getAddress(params.user),
+      tier: params.tierIndex,
+      uplinesHash,
+      ranksHash,
+      token: ethers.getAddress(params.tokenAddress),
+      deadline: params.deadline,
+      nonce: nonce,
+      signatureEpoch: epoch,
+      operation: params.operation === 'PURCHASE' ? PURCHASE_OP : UPGRADE_OP,
+    };
+
+    return companyWallet.signTypedData(domain, types, value);
   }
 
   private static async prepareAuth(

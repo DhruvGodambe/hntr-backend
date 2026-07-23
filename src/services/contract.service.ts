@@ -1,14 +1,13 @@
 import { ethers } from 'ethers';
 import { ENV } from '../config/env';
-import { Tier, TIER_VOLUMES } from '../constants';
 import { logger } from '../utils/logger';
 
 export const CONTRACT_ADDRESS = ENV.CONTRACT_ADDRESS;
 export const RPC_URL = ENV.RPC_URL;
 
 /**
- * Human-readable ABI for the currently deployed Sepolia contract.
- * Do not add pause / Ownable2Step / nonce / rescue APIs until that revision is redeployed.
+ * Human-readable ABI matching the deployed HNTRMembership contract (EIP-712,
+ * Ownable2Step, Pausable, ReentrancyGuard, pull-payment, multi-signer).
  */
 export const contractABI = [
   'constructor(address _usdt, address _usdc)',
@@ -16,6 +15,7 @@ export const contractABI = [
   // --- Views ---
   'function usdt() view returns (address)',
   'function usdc() view returns (address)',
+  'function tokenDecimals() view returns (uint8)',
   'function treasuryWallet() view returns (address)',
   'function leadershipWallet() view returns (address)',
   'function achievementWallet() view returns (address)',
@@ -34,18 +34,38 @@ export const contractABI = [
   'function CLAIM_GRACE_PERIOD() view returns (uint256)',
   'function PURCHASE_OP() view returns (bytes32)',
   'function UPGRADE_OP() view returns (bytes32)',
+  'function MAX_SIGNATURE_VALIDITY() view returns (uint256)',
+  'function MAX_UPLINES() view returns (uint256)',
+  'function nonces(address) view returns (uint256)',
+  'function signatureEpoch() view returns (uint256)',
+  'function isAuthorizedSigner(address) view returns (bool)',
+  'function protocolBalances(address, address) view returns (uint256)',
+  'function totalProtocolBalance(address) view returns (uint256)',
+  'function totalWithdrawable(address) view returns (uint256)',
   'function getUser(address user) view returns (tuple(uint8 tier, uint256 joinedAt))',
   'function getOverdueWallets(address token) view returns (address[])',
 
   // --- Owner admin ---
   'function setWallets(address _treasury, address _leadership, address _achievement, address _poolWallet)',
   'function setCompanyWallet(address _companyWallet)',
+  'function pause()',
+  'function unpause()',
+  'function invalidateSignatures()',
+  'function authorizeSigner(address signer)',
+  'function revokeSigner(address signer)',
+  'function rescueToken(address token, address to, uint256 amount)',
+  'function renounceOwnership()',
+  'function transferOwnership(address newOwner)',
+  'function acceptOwnership()',
 
   // --- User writes (backend-signed uplines + ranks) ---
   'function purchaseMembership(address user, uint8 tier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature)',
   'function upgradeMembership(address user, uint8 newTier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature)',
+  'function purchaseMembershipWithPermit(address user, uint8 tier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature, uint256 permitValue, uint256 permitDeadline, uint8 permitV, bytes32 permitR, bytes32 permitS)',
+  'function upgradeMembershipWithPermit(address user, uint8 newTier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature, uint256 permitValue, uint256 permitDeadline, uint8 permitV, bytes32 permitR, bytes32 permitS)',
   'function withdrawCommissions(address user, address token)',
   'function withdrawCompanyWallet(address user, address token)',
+  'function withdrawProtocolBalance(address token)',
 
   // --- Events ---
   'event MembershipPurchased(address indexed user, uint8 tier, uint256 amount, address token)',
@@ -55,6 +75,12 @@ export const contractABI = [
   'event CompanyWalletWithdrawn(address indexed user, address indexed token, uint256 amount, address indexed companyWallet)',
   'event WalletsUpdated(address treasury, address leadership, address achievement, address poolWallet)',
   'event CompanyWalletUpdated(address companyWallet)',
+  'event SignaturesInvalidated(uint256 newEpoch)',
+  'event TokensRescued(address indexed token, address indexed to, uint256 amount)',
+  'event SignerAuthorized(address indexed signer)',
+  'event SignerRevoked(address indexed signer)',
+  'event ProtocolFundsCredited(address indexed wallet, address indexed token, uint256 amount)',
+  'event ProtocolFundsWithdrawn(address indexed wallet, address indexed token, uint256 amount)',
 
   // --- Errors (SafeERC20) ---
   'error SafeERC20FailedOperation(address token)',
@@ -93,32 +119,25 @@ export function getErc20(tokenAddress: string) {
   return new ethers.Contract(tokenAddress, erc20ABI, provider);
 }
 
-let cachedAmountDecimals: number | null = null;
+let cachedTokenDecimals: number | null = null;
 
 /**
- * The HNTRMembership contract stores/emit amounts in its own internal decimal scale,
- * which may differ from the ERC20 token decimals (e.g. 6 vs 18). We detect it once by
- * comparing the raw Bronze tier price to the known $50 price so commission balances,
- * event amounts, and transfer amounts all use the same scale.
+ * Reads the immutable `tokenDecimals` from the deployed HNTRMembership contract.
+ * This is the decimal scale shared by USDT/USDC (detected at deploy time) and used
+ * for all tier prices, commission balances, and transfer amounts.
  */
 export async function getContractAmountDecimals(): Promise<number> {
-  if (cachedAmountDecimals !== null) {
-    return cachedAmountDecimals;
+  if (cachedTokenDecimals !== null) {
+    return cachedTokenDecimals;
   }
 
   try {
-    const bronzeIndex = 1; // Bronze tier
-    const rawPrice = await hntrContract.tierPrices(bronzeIndex);
-    const expectedPrice = TIER_VOLUMES[Tier.BRONZE]; // 50
-    const rawPerDollar = Number(rawPrice) / expectedPrice;
-    const decimals = Math.round(Math.log10(rawPerDollar));
-
-    cachedAmountDecimals = decimals > 0 ? decimals : 18;
-    logger.info(`Detected contract amount decimals: ${cachedAmountDecimals} (rawPrice=${rawPrice}, expected=${expectedPrice})`);
+    cachedTokenDecimals = Number(await hntrContract.tokenDecimals());
+    logger.info(`Contract tokenDecimals: ${cachedTokenDecimals}`);
   } catch (err: any) {
-    logger.warn(`Failed to detect contract amount decimals: ${err.message}; falling back to 18`);
-    cachedAmountDecimals = 18;
+    logger.warn(`Failed to read tokenDecimals(): ${err.message}; falling back to 6`);
+    cachedTokenDecimals = 6;
   }
 
-  return cachedAmountDecimals;
+  return cachedTokenDecimals;
 }

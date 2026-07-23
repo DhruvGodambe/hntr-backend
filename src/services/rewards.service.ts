@@ -2,7 +2,7 @@ import User, { IUser } from '../models/User';
 import Payout, { IPayoutBreakdownEntry } from '../models/Payout';
 import AchievementBonus from '../models/AchievementBonus';
 import { ethers } from 'ethers';
-import { hntrContract, provider, getErc20, getContractAmountDecimals } from './contract.service';
+import { hntrContract, contractABI, provider, getErc20, getContractAmountDecimals, CONTRACT_ADDRESS } from './contract.service';
 import { ENV } from '../config/env';
 import {
   getAchievementBonusAmount,
@@ -15,6 +15,32 @@ import {
 import { NotificationService } from './notification.service';
 
 export class RewardsService {
+  /**
+   * Withdraws accrued protocol balance for both USDT and USDC from the contract.
+   * Under pull-payment, protocol wallets (leadership, achievement, etc.) must call
+   * this before they can transfer funds to users.
+   */
+  private static async withdrawProtocolBalances(walletSigner: ethers.Wallet) {
+    const membershipWithSigner = new ethers.Contract(CONTRACT_ADDRESS, contractABI, walletSigner);
+    const [usdtAddress, usdcAddress] = await Promise.all([
+      hntrContract.usdt(),
+      hntrContract.usdc(),
+    ]);
+
+    for (const [symbol, tokenAddress] of [['USDT', usdtAddress], ['USDC', usdcAddress]] as const) {
+      const balance: bigint = await hntrContract.protocolBalances(walletSigner.address, tokenAddress);
+      if (balance > BigInt(0)) {
+        try {
+          const tx = await membershipWithSigner.withdrawProtocolBalance(tokenAddress);
+          await tx.wait(1);
+          console.log(`Withdrew ${symbol} protocol balance (${balance}) for ${walletSigner.address}`);
+        } catch (err: any) {
+          console.error(`Failed to withdraw ${symbol} protocol balance: ${err.message}`);
+        }
+      }
+    }
+  }
+
   /**
    * Admin/report view of pending + paid one-time rank achievement bonuses.
    */
@@ -109,10 +135,13 @@ export class RewardsService {
       balance: number;
     };
 
-    // Membership amounts use the contract's internal scale (6 on this deploy), which
-    // can differ from ERC20.decimals() (mock tokens report 18). Always use the
-    // contract scale for USD balance + fixed-dollar transfers.
     const amountDecimals = await getContractAmountDecimals();
+
+    const pending = await AchievementBonus.find({ status: 'PENDING' }).sort({ createdAt: 1 });
+    if (pending.length === 0) {
+      console.log('No pending achievement bonuses to disburse.');
+      return [];
+    }
 
     const tokenPools: TokenPool[] = await Promise.all(
       (
@@ -136,12 +165,6 @@ export class RewardsService {
     tokenPools.forEach((p) =>
       console.log(`Live Achievement Wallet Balance: $${p.balance} ${p.symbol}`),
     );
-
-    const pending = await AchievementBonus.find({ status: 'PENDING' }).sort({ createdAt: 1 });
-    if (pending.length === 0) {
-      console.log('No pending achievement bonuses to disburse.');
-      return [];
-    }
 
     const paidOut = [];
     const zero = BigInt(0);
@@ -227,7 +250,11 @@ export class RewardsService {
     return paidOut;
   }
 
-  /** Live USDT/USDC balances held by an on-chain pool wallet (leadership or achievement). */
+  /**
+   * Live USDT/USDC balances available to a protocol wallet (leadership or achievement).
+   * Includes both the wallet's ERC20 balance AND unclaimed protocol balance still held
+   * inside the contract (pull-payment model).
+   */
   private static async getPoolWalletBalances(poolWallet: string) {
     const [usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
       hntrContract.usdt(),
@@ -243,14 +270,16 @@ export class RewardsService {
         ] as const
       ).map(async ({ symbol, address: tokenAddress }) => {
         const erc20 = getErc20(tokenAddress);
-        const rawBalance = await erc20.balanceOf(poolWallet);
-        // Use contract amount decimals (not ERC20.decimals) — mock USDT/USDC report 18
-        // while HNTRMembership prices/splits use 6-decimal units.
-        const balance = Number(ethers.formatUnits(rawBalance, amountDecimals));
+        const [rawBalance, protocolBalance] = await Promise.all([
+          erc20.balanceOf(poolWallet),
+          hntrContract.protocolBalances(poolWallet, tokenAddress),
+        ]);
+        const walletBal = Number(ethers.formatUnits(rawBalance, amountDecimals));
+        const contractBal = Number(ethers.formatUnits(protocolBalance, amountDecimals));
         return {
           symbol,
           address: tokenAddress,
-          balance: Number(balance.toFixed(6)),
+          balance: Number((walletBal + contractBal).toFixed(6)),
         };
       }),
     );
@@ -433,6 +462,15 @@ export class RewardsService {
       );
     }
 
+    const eligibleUsers = await User.find({
+      rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
+    });
+
+    if (eligibleUsers.length === 0) {
+      console.log('No users with leadership shares — skipping payouts.');
+      return [];
+    }
+
     const amountDecimals = await getContractAmountDecimals();
 
     const tokenPools = await Promise.all(
@@ -464,10 +502,6 @@ export class RewardsService {
       console.log('Leadership pool is empty — nothing to distribute this month.');
       return [];
     }
-
-    const eligibleUsers = await User.find({
-      rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
-    });
 
     let totalShares = 0;
     const userShares = eligibleUsers.map((u) => {
