@@ -9,10 +9,18 @@ import { contractABI, CONTRACT_ADDRESS, getContractAmountDecimals } from '../ser
 import { getLogsViaEtherscan } from '../services/etherscan.service';
 import { ENV } from '../config/env';
 import Transaction from '../models/Transaction';
+import Payout from '../models/Payout';
+import AchievementBonus from '../models/AchievementBonus';
 import { findActivePendingRelay } from '../utils/staleTransactions';
 import { sendSuccess, sendError } from '../utils/response';
 
 const TIER_NAMES = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'];
+
+function mapRewardStatus(status: 'PENDING' | 'PAID' | 'FAILED'): 'PENDING' | 'CONFIRMED' | 'FAILED' {
+  if (status === 'PAID') return 'CONFIRMED';
+  if (status === 'FAILED') return 'FAILED';
+  return 'PENDING';
+}
 
 export class NetworkController {
   static async getUplines(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -131,12 +139,27 @@ export class NetworkController {
       // captured by the blockchain listener). This ensures the 80/20 split data is
       // available even if the Etherscan API is slow or unavailable, and includes
       // off-chain metadata like per-token locked amounts.
+      // Leadership / achievement cron dispersals live in separate collections and
+      // are merged into the same history response so the frontend only needs one API.
       const dbRecordsPromise = Transaction.find({ walletAddress: normalizedAddress })
         .sort({ timestamp: -1 })
         .limit(limit * 2)
         .lean();
+      const leadershipPayoutsPromise = Payout.find({ walletAddress: normalizedAddress })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
+      const achievementBonusesPromise = AchievementBonus.find({ walletAddress: normalizedAddress })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
 
-      const [allLogs, dbRecords] = await Promise.all([chainLogsPromise, dbRecordsPromise]);
+      const [allLogs, dbRecords, leadershipPayouts, achievementBonuses] = await Promise.all([
+        chainLogsPromise,
+        dbRecordsPromise,
+        leadershipPayoutsPromise,
+        achievementBonusesPromise,
+      ]);
 
       const flatLogs = allLogs.flat().sort((a, b) => b.log.blockNumber - a.log.blockNumber).slice(0, limit);
 
@@ -223,6 +246,36 @@ export class NetworkController {
         }
       });
 
+      const cronTransactions = [
+        ...leadershipPayouts.map((payout) => {
+          const paidEntry = (payout.breakdown || []).find((b) => b.status === 'PAID' && b.txHash);
+          return {
+            type: 'LEADERSHIP_PAYOUT',
+            txHash: paidEntry?.txHash || payout.txHash || undefined,
+            blockNumber: 0,
+            timestamp: payout.createdAt ? new Date(payout.createdAt).toISOString() : null,
+            amount: Number(payout.amountUSDC || 0).toFixed(2),
+            token: paidEntry?.symbol || payout.breakdown?.[0]?.symbol || null,
+            tier: payout.month,
+            status: mapRewardStatus(payout.status),
+          };
+        }),
+        ...achievementBonuses.map((bonus) => ({
+          type: 'ACHIEVEMENT_BONUS',
+          txHash: bonus.txHash || undefined,
+          blockNumber: 0,
+          timestamp: bonus.paidAt
+            ? new Date(bonus.paidAt).toISOString()
+            : bonus.createdAt
+              ? new Date(bonus.createdAt).toISOString()
+              : null,
+          amount: Number(bonus.amountUSD || 0).toFixed(2),
+          token: bonus.token || null,
+          tier: bonus.rank,
+          status: mapRewardStatus(bonus.status),
+        })),
+      ];
+
       // Merge chain + DB records. Normalize aliased types so one purchase does not
       // appear three times (Etherscan MembershipPurchased + DB PURCHASE + PENDING).
       const isClaimType = (type: string) =>
@@ -257,9 +310,13 @@ export class NetworkController {
 
         const key = item.txHash && normalized === 'CLAIM'
           ? `${item.txHash}-claim`
-          : item.level !== undefined
-            ? `${item.txHash || 'pending'}-${normalized}-${item.level}`
-            : `${item.txHash || 'pending'}-${normalized}`;
+          : item.type === 'LEADERSHIP_PAYOUT'
+            ? `leadership-${item.tier || item.txHash || item.timestamp}`
+            : item.type === 'ACHIEVEMENT_BONUS'
+              ? `achievement-${item.tier || item.txHash || item.timestamp}`
+              : item.level !== undefined
+                ? `${item.txHash || 'pending'}-${normalized}-${item.level}`
+                : `${item.txHash || 'pending'}-${normalized}`;
 
         const existing = merged.get(key);
         if (!existing) {
@@ -288,9 +345,11 @@ export class NetworkController {
         }
       };
 
-      // Chain first (has block timestamps), then DB (fills gaps + pending/status).
+      // Chain first (has block timestamps), then DB (fills gaps + pending/status),
+      // then cron dispersals (leadership / rank bonus).
       chainTransactions.forEach(addToMerged);
       dbTransactions.forEach(addToMerged);
+      cronTransactions.forEach(addToMerged);
 
       const transactions = Array.from(merged.values())
         .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
