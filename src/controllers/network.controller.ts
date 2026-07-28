@@ -78,10 +78,11 @@ export class NetworkController {
         return;
       }
 
+      const normalizedToken = String(token).toLowerCase();
       const txnRecord = await Transaction.create({
         walletAddress: walletAddress.toLowerCase(),
         type: 'COMMISSION_CLAIM',
-        token,
+        token: normalizedToken,
         amount: 0,
         status: 'PENDING',
       });
@@ -91,7 +92,7 @@ export class NetworkController {
         {
           operation: 'COMMISSION_CLAIM',
           walletAddress: walletAddress.toLowerCase(),
-          tokenAddress: token,
+          tokenAddress: normalizedToken,
           contractAddress: CONTRACT_ADDRESS,
           pendingTransactionId: txnRecord._id.toString(),
           status: 'PENDING',

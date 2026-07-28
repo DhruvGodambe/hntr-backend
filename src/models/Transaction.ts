@@ -67,11 +67,16 @@ const TransactionSchema: Schema = new Schema({
 });
 
 // A single transaction can emit multiple events for different wallets/levels/tokens,
-// so uniqueness is enforced on the combined key rather than txHash alone. Sparse so
-// PENDING records (which have no txHash yet) don't collide with confirmed records.
+// so uniqueness is enforced on the combined key rather than txHash alone.
+// Partial (not sparse): compound sparse indexes still include docs that have any of
+// the other keys, so PENDING/FAILED relay stubs with txHash:null collided on
+// {null, wallet, type, token, null} and blocked claim retries (E11000).
 TransactionSchema.index(
   { txHash: 1, walletAddress: 1, type: 1, token: 1, level: 1 },
-  { unique: true, sparse: true },
+  {
+    unique: true,
+    partialFilterExpression: { txHash: { $type: 'string' } },
+  },
 );
 
 // Prevent a second PURCHASE/UPGRADE/COMMISSION_CLAIM relay from being submitted for the same wallet

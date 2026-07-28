@@ -26,6 +26,30 @@ async function ensureTransactionIndexes() {
       await txCollection.dropIndex('txHash_1');
       logger.info('Dropped old txHash_1 unique index from transactions collection');
     }
+
+    // Replace compound sparse unique with a partial unique on real txHash strings.
+    // Sparse compound indexes still indexed PENDING/FAILED stubs (walletAddress/type/token
+    // present, txHash null), so a second claim for the same wallet+token hit E11000.
+    const compoundName = 'txHash_1_walletAddress_1_type_1_token_1_level_1';
+    const compoundIndex = txIndexes.find((i) => i.name === compoundName);
+    const needsCompoundRebuild =
+      !!compoundIndex &&
+      (!(compoundIndex as { partialFilterExpression?: unknown }).partialFilterExpression ||
+        (compoundIndex as { sparse?: boolean }).sparse === true);
+
+    if (needsCompoundRebuild) {
+      await txCollection.dropIndex(compoundName);
+      logger.info(`Dropped legacy ${compoundName} sparse unique index from transactions`);
+      await txCollection.createIndex(
+        { txHash: 1, walletAddress: 1, type: 1, token: 1, level: 1 },
+        {
+          unique: true,
+          name: compoundName,
+          partialFilterExpression: { txHash: { $type: 'string' } },
+        },
+      );
+      logger.info(`Recreated ${compoundName} as partial unique (txHash string only)`);
+    }
   } catch (err: any) {
     logger.warn(`Transaction index migration warning: ${err.message}`);
   }
