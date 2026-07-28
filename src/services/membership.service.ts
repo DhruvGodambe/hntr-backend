@@ -294,7 +294,7 @@ export class MembershipService {
       walletAddress: address,
       type: 'PURCHASE',
       tier: tierName,
-      token: quote.tokenSymbol,
+      token: String(quote.tokenAddress).toLowerCase(),
       amount: TIER_VOLUMES[quote.tier as Tier] || 0,
       status: 'PENDING',
     });
@@ -348,7 +348,7 @@ export class MembershipService {
       walletAddress: address,
       type: 'UPGRADE',
       tier: newTierName,
-      token: quote.tokenSymbol,
+      token: String(quote.tokenAddress).toLowerCase(),
       amount: TIER_VOLUMES[quote.tier as Tier] || 0,
       status: 'PENDING',
     });

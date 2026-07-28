@@ -86,6 +86,34 @@ async function readWalletStablecoinBalances(walletAddress: string) {
   return { tokens, totalUsd: Number(totalUsd.toFixed(2)) };
 }
 
+let cachedStablecoinAddresses: { usdt: string; usdc: string } | null = null;
+
+async function getStablecoinAddresses() {
+  if (cachedStablecoinAddresses) return cachedStablecoinAddresses;
+  const [usdt, usdc] = await Promise.all([hntrContract.usdt(), hntrContract.usdc()]);
+  cachedStablecoinAddresses = {
+    usdt: String(usdt).toLowerCase(),
+    usdc: String(usdc).toLowerCase(),
+  };
+  return cachedStablecoinAddresses;
+}
+
+/** Map stored token address or symbol to USDT/USDC for admin display. */
+async function resolveAdminTokenLabel(token?: string | null): Promise<string> {
+  if (!token) return '—';
+  const raw = String(token).trim();
+  if (!raw) return '—';
+  const upper = raw.toUpperCase();
+  if (upper === 'USDT' || upper === 'USDC') return upper;
+
+  const lower = raw.toLowerCase();
+  const { usdt, usdc } = await getStablecoinAddresses();
+  if (lower === usdt) return 'USDT';
+  if (lower === usdc) return 'USDC';
+  if (raw.startsWith('0x') && raw.length >= 10) return `${raw.slice(0, 6)}…${raw.slice(-4)}`;
+  return raw;
+}
+
 function monthRange(offsetMonths: number) {
   const now = new Date();
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offsetMonths, 1));
@@ -285,7 +313,8 @@ export class AdminPanelService {
       .lean();
     const userByWallet = new Map(users.map((u) => [u.walletAddress.toLowerCase(), u.username]));
 
-    const items = rows.map((tx) => ({
+    const items = await Promise.all(
+      rows.map(async (tx) => ({
       id: String(tx._id),
       type:
         tx.type === 'COMMISSION_EARNED'
@@ -300,10 +329,11 @@ export class AdminPanelService {
       user: userByWallet.get(tx.walletAddress.toLowerCase()) || tx.walletAddress.slice(0, 6) + '...',
       walletAddress: tx.walletAddress,
       amount: tx.amount,
-      token: tx.token || 'USDT',
+      token: await resolveAdminTokenLabel(tx.token),
       status: tx.status,
       timestamp: tx.timestamp,
-    }));
+    })),
+    );
 
     return paginatedResponse(items, total, page, limit);
   }
@@ -493,7 +523,8 @@ export class AdminPanelService {
 
     const userByWallet = new Map(users.map((u) => [u.walletAddress.toLowerCase(), u]));
 
-    const items = rows.map((tx) => {
+    const items = await Promise.all(
+      rows.map(async (tx) => {
       const user = userByWallet.get(tx.walletAddress.toLowerCase());
       const relatedPoints = pointsLedgers.find(
         (p) =>
@@ -509,14 +540,15 @@ export class AdminPanelService {
         walletAddress: tx.walletAddress,
         type: tx.type,
         amount: tx.amount,
-        token: tx.token || 'USDT',
+        token: await resolveAdminTokenLabel(tx.token),
         hntrPoints: relatedPoints?.amount ?? null,
         txHash: tx.txHash || null,
         status: tx.status,
         tier: tx.tier,
         level: tx.level,
       };
-    });
+    }),
+    );
 
     return paginatedResponse(items, total, page, limit);
   }
@@ -661,17 +693,19 @@ export class AdminPanelService {
           .limit(limit)
           .lean(),
       ]);
-      const items = dbRows.map((tx) => ({
+      const items = await Promise.all(
+        dbRows.map(async (tx) => ({
         id: String(tx._id),
         direction: 'IN' as const,
         type: 'Locked Commission',
         amount: tx.lockedAmount || 0,
-        token: (tx.token || 'USDT').toUpperCase().includes('0x') ? 'USDT' : String(tx.token || 'USDT').toUpperCase(),
+        token: await resolveAdminTokenLabel(tx.token),
         counterparty: tx.walletAddress,
         timestamp: new Date(tx.timestamp).toISOString(),
         txHash: tx.txHash || '',
         blockNumber: 0,
-      }));
+      })),
+      );
       return {
         walletKey,
         walletAddress: walletAddress.toLowerCase(),

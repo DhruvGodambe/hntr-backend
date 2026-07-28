@@ -193,12 +193,24 @@ export class NetworkController {
             return { ...base, amount: toDollars(BigInt(amount.toString())), token };
           }
           case 'MembershipPurchased': {
-            const [, tier, amount, token] = parsed.args;
-            return { ...base, amount: toDollars(BigInt(amount.toString())), token, tier: TIER_NAMES[Number(tier)] || 'None' };
+            const [buyer, tier, amount, token] = parsed.args;
+            return {
+              ...base,
+              amount: toDollars(BigInt(amount.toString())),
+              token,
+              tier: TIER_NAMES[Number(tier)] || 'None',
+              sourceWalletAddress: String(buyer).toLowerCase(),
+            };
           }
           case 'MembershipUpgraded': {
-            const [, , newTier, amountPaid, token] = parsed.args;
-            return { ...base, amount: toDollars(BigInt(amountPaid.toString())), token, tier: TIER_NAMES[Number(newTier)] || 'None' };
+            const [buyer, , newTier, amountPaid, token] = parsed.args;
+            return {
+              ...base,
+              amount: toDollars(BigInt(amountPaid.toString())),
+              token,
+              tier: TIER_NAMES[Number(newTier)] || 'None',
+              sourceWalletAddress: String(buyer).toLowerCase(),
+            };
           }
           default:
             return { ...base, amount: null, token: null };
@@ -224,6 +236,7 @@ export class NetworkController {
               lockedAmount: amount(record.lockedAmount),
               level: record.level ?? undefined,
               token: record.token,
+              sourceWalletAddress: record.sourceWalletAddress || undefined,
             };
           case 'COMMISSION_WITHDRAWN':
           case 'COMMISSION_CLAIM':
@@ -352,9 +365,93 @@ export class NetworkController {
       dbTransactions.forEach(addToMerged);
       cronTransactions.forEach(addToMerged);
 
+      // Map purchase/upgrade txHash → buyer wallet so commission rows can show source user.
+      const buyerByTxHash = new Map<string, string>();
+      const chainRows: any[] = chainTransactions;
+      for (const item of chainRows) {
+        const normalized = normalizeType(String(item.type));
+        if (
+          (normalized === 'PURCHASE' || normalized === 'UPGRADE') &&
+          item.txHash &&
+          item.sourceWalletAddress
+        ) {
+          buyerByTxHash.set(String(item.txHash).toLowerCase(), String(item.sourceWalletAddress).toLowerCase());
+        }
+      }
+      for (const record of dbRecords) {
+        if (
+          (record.type === 'PURCHASE' || record.type === 'UPGRADE') &&
+          record.txHash &&
+          record.walletAddress
+        ) {
+          buyerByTxHash.set(record.txHash.toLowerCase(), record.walletAddress.toLowerCase());
+        }
+      }
+
       const transactions = Array.from(merged.values())
         .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
         .slice(0, limit);
+
+      // Commission earner's history never includes the buyer's PURCHASE row (different wallet),
+      // so resolve missing sources by looking up purchase/upgrade records for those tx hashes.
+      const missingSourceHashes = [
+        ...new Set(
+          transactions
+            .filter((tx) => {
+              const normalized = normalizeType(tx.type);
+              return (
+                normalized === 'COMMISSION_EARNED' &&
+                !tx.sourceWalletAddress &&
+                !!tx.txHash
+              );
+            })
+            .map((tx) => String(tx.txHash).toLowerCase()),
+        ),
+      ];
+      if (missingSourceHashes.length > 0) {
+        const purchaseRows = await Transaction.find({
+          txHash: { $in: missingSourceHashes },
+          type: { $in: ['PURCHASE', 'UPGRADE'] },
+        })
+          .select('txHash walletAddress')
+          .lean();
+        for (const row of purchaseRows) {
+          if (row.txHash && row.walletAddress) {
+            buyerByTxHash.set(row.txHash.toLowerCase(), row.walletAddress.toLowerCase());
+          }
+        }
+      }
+
+      for (const tx of transactions) {
+        const normalized = normalizeType(tx.type);
+        if (normalized !== 'COMMISSION_EARNED') continue;
+        if (!tx.sourceWalletAddress && tx.txHash) {
+          const fromPurchase = buyerByTxHash.get(String(tx.txHash).toLowerCase());
+          if (fromPurchase) tx.sourceWalletAddress = fromPurchase;
+        }
+      }
+
+      const sourceWallets = [
+        ...new Set(
+          transactions
+            .map((tx) => tx.sourceWalletAddress)
+            .filter((w): w is string => typeof w === 'string' && w.length > 0)
+            .map((w) => w.toLowerCase()),
+        ),
+      ];
+      if (sourceWallets.length > 0) {
+        const sourceUsers = await User.find({ walletAddress: { $in: sourceWallets } })
+          .select('walletAddress username')
+          .lean();
+        const usernameByWallet = new Map(
+          sourceUsers.map((u) => [u.walletAddress.toLowerCase(), u.username]),
+        );
+        for (const tx of transactions) {
+          if (!tx.sourceWalletAddress) continue;
+          const username = usernameByWallet.get(String(tx.sourceWalletAddress).toLowerCase());
+          if (username) tx.sourceUsername = username;
+        }
+      }
 
       sendSuccess(res, { transactions }, 'Transactions retrieved');
     } catch (error) {

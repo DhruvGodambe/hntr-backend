@@ -180,7 +180,7 @@ export class BlockchainService {
     }
 
     if (parsed.name === 'MembershipPurchased') {
-      const [buyer, tierIndex, amount] = parsed.args;
+      const [buyer, tierIndex, amount, token] = parsed.args;
       logger.info(`MembershipPurchased event detected for ${buyer} at block ${log.blockNumber}`);
       await this.handlePurchaseOrUpgrade(
         buyer,
@@ -188,9 +188,10 @@ export class BlockchainService {
         txHash,
         'PURCHASE',
         BigInt(amount.toString()),
+        String(token),
       );
     } else if (parsed.name === 'MembershipUpgraded') {
-      const [buyer, , newTier, amountPaid] = parsed.args;
+      const [buyer, , newTier, amountPaid, token] = parsed.args;
       logger.info(`MembershipUpgraded event detected for ${buyer} at block ${log.blockNumber}`);
       await this.handlePurchaseOrUpgrade(
         buyer,
@@ -198,6 +199,7 @@ export class BlockchainService {
         txHash,
         'UPGRADE',
         BigInt(amountPaid.toString()),
+        String(token),
       );
     } else if (parsed.name === 'CommissionEarned') {
       const [user, liquidAmount, lockedAmount, level, token] = parsed.args;
@@ -381,10 +383,12 @@ export class BlockchainService {
     txHash: string,
     type: 'PURCHASE' | 'UPGRADE',
     rawAmount: bigint,
+    tokenAddress?: string,
   ) {
     const tierStr = this.getTierString(tierIndex);
     const normalizedWallet = walletAddress.toLowerCase();
     const normalizedHash = txHash.toLowerCase();
+    const normalizedToken = tokenAddress ? String(tokenAddress).toLowerCase() : undefined;
 
     const user = await User.findOne({ walletAddress: normalizedWallet });
     if (!user) {
@@ -416,6 +420,7 @@ export class BlockchainService {
       existingByHash.status = 'CONFIRMED';
       existingByHash.tier = tierStr;
       existingByHash.amount = amountUsd;
+      if (normalizedToken) existingByHash.token = normalizedToken;
       existingByHash.timestamp = new Date();
       await existingByHash.save();
       logger.info(`Updated existing ${type} row to CONFIRMED for ${normalizedHash}`);
@@ -430,6 +435,7 @@ export class BlockchainService {
         pending.status = 'CONFIRMED';
         pending.tier = tierStr;
         pending.amount = amountUsd;
+        if (normalizedToken) pending.token = normalizedToken;
         pending.timestamp = new Date();
         await pending.save();
         logger.info(`Promoted PENDING ${type} to CONFIRMED for ${normalizedHash}`);
@@ -440,6 +446,7 @@ export class BlockchainService {
             walletAddress: user.walletAddress,
             type,
             tier: tierStr,
+            token: normalizedToken,
             amount: amountUsd,
             status: 'CONFIRMED',
             timestamp: new Date(),
@@ -492,6 +499,39 @@ export class BlockchainService {
     );
   }
 
+  private async resolveCommissionSourceWallet(txHash: string): Promise<string | undefined> {
+    const normalizedHash = txHash.toLowerCase();
+
+    const purchase = await Transaction.findOne({
+      txHash: normalizedHash,
+      type: { $in: ['PURCHASE', 'UPGRADE'] },
+    })
+      .select('walletAddress')
+      .lean();
+    if (purchase?.walletAddress) return purchase.walletAddress.toLowerCase();
+
+    try {
+      const receipt = await provider.getTransactionReceipt(normalizedHash);
+      if (!receipt) return undefined;
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() !== CONTRACT_ADDRESS.toLowerCase()) continue;
+        let parsed: ethers.LogDescription | null = null;
+        try {
+          parsed = this.iface.parseLog({ topics: log.topics as string[], data: log.data });
+        } catch {
+          continue;
+        }
+        if (!parsed) continue;
+        if (parsed.name === 'MembershipPurchased' || parsed.name === 'MembershipUpgraded') {
+          return String(parsed.args[0]).toLowerCase();
+        }
+      }
+    } catch (err: any) {
+      logger.warn(`Could not resolve commission source for ${normalizedHash}: ${err.message}`);
+    }
+    return undefined;
+  }
+
   private async handleCommissionEarned(
     walletAddress: string,
     liquidAmount: bigint,
@@ -522,9 +562,18 @@ export class BlockchainService {
       level,
     });
     if (existing) {
+      if (!existing.sourceWalletAddress) {
+        const source = await this.resolveCommissionSourceWallet(normalizedHash);
+        if (source) {
+          existing.sourceWalletAddress = source;
+          await existing.save();
+        }
+      }
       logger.info(`Duplicate CommissionEarned tx skipped: ${normalizedHash} level ${level}`);
       return;
     }
+
+    const sourceWalletAddress = await this.resolveCommissionSourceWallet(normalizedHash);
 
     try {
       await Transaction.create({
@@ -536,6 +585,7 @@ export class BlockchainService {
         liquidAmount: liquid,
         lockedAmount: locked,
         level,
+        sourceWalletAddress,
         status: 'CONFIRMED',
         timestamp: new Date(),
       });
@@ -556,17 +606,33 @@ export class BlockchainService {
       logger.error(`Failed to award points for commission ${normalizedHash}: ${pointsErr.message}`);
     }
 
+    const sourceLabel = sourceWalletAddress
+      ? (await User.findOne({ walletAddress: sourceWalletAddress }).select('username').lean())?.username ||
+        `${sourceWalletAddress.slice(0, 6)}…${sourceWalletAddress.slice(-4)}`
+      : null;
+
     await NotificationService.createQuiet({
       walletAddress: normalizedWallet,
       type: 'COMMISSION_EARNED',
       title: 'Referral commission earned',
-      sub: `$${total.toFixed(2)} from level ${level} ($${liquid.toFixed(2)} claimable, $${locked.toFixed(2)} locked).`,
+      sub: sourceLabel
+        ? `$${total.toFixed(2)} from @${sourceLabel} (level ${level}) — $${liquid.toFixed(2)} claimable, $${locked.toFixed(2)} locked.`
+        : `$${total.toFixed(2)} from level ${level} ($${liquid.toFixed(2)} claimable, $${locked.toFixed(2)} locked).`,
       link: 'VIEW NETWORK',
-      meta: { amount: total, liquid, locked, level, txHash: normalizedHash },
+      meta: {
+        amount: total,
+        liquid,
+        locked,
+        level,
+        txHash: normalizedHash,
+        sourceWalletAddress,
+        sourceUsername: sourceLabel,
+      },
     });
 
     logger.info(
-      `Stored COMMISSION_EARNED for ${walletAddress}: +$${total.toFixed(2)} (liquid $${liquid.toFixed(2)}, locked $${locked.toFixed(2)})`,
+      `Stored COMMISSION_EARNED for ${walletAddress}: +$${total.toFixed(2)} (liquid $${liquid.toFixed(2)}, locked $${locked.toFixed(2)})` +
+        (sourceWalletAddress ? ` from ${sourceWalletAddress}` : ''),
     );
   }
 

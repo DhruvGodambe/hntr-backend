@@ -10,6 +10,8 @@ export interface ITransaction extends Document {
   liquidAmount?: number; // 80% of the commission (claimable part)
   lockedAmount?: number; // 20% of the commission (locked / pool-wallet part)
   level?: number; // referral level for COMMISSION_EARNED (1-12)
+  /** Wallet that purchased/upgraded and triggered this commission (same tx). */
+  sourceWalletAddress?: string;
   status: 'PENDING' | 'CONFIRMED' | 'FAILED';
   errorMessage?: string;
   timestamp: Date;
@@ -51,6 +53,10 @@ const TransactionSchema: Schema = new Schema({
   },
   level: {
     type: Number,
+  },
+  sourceWalletAddress: {
+    type: String,
+    index: true,
   },
   status: {
     type: String,
