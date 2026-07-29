@@ -136,12 +136,18 @@ export class MembershipService {
     const amountDue: bigint = BigInt(price) - BigInt(currentPrice);
 
     const erc20 = getErc20(tokenAddress);
-    const requestedSymbol = normalizeRequestedTokenSymbol(tokenSymbol);
-    // tierPrices / amountDue use the contract's internal scale (USDT-like 6), which can
-    // differ from ERC20.decimals() on mock tokens (often 18). Format with contract scale.
-    const [allowance, balance, contractDecimals] = await Promise.all([
+    // Prefer the caller-requested symbol (USDT/USDC) over erc20.symbol().
+    // Sepolia mocks often share one MockERC20 implementation and both report the
+    // same on-chain symbol, which made insufficient-balance toasts say USDT when
+    // the user selected USDC.
+    const requestedSymbol = String(tokenSymbol).toUpperCase();
+    const displaySymbol =
+      requestedSymbol === 'USDT' || requestedSymbol === 'USDC' ? requestedSymbol : null;
+
+    const [allowance, balance, onChainSymbol, contractDecimals] = await Promise.all([
       erc20.allowance(walletAddress, CONTRACT_ADDRESS),
       erc20.balanceOf(walletAddress),
+      displaySymbol ? Promise.resolve(displaySymbol) : erc20.symbol().catch(() => tokenSymbol),
       getContractAmountDecimals(),
     ]);
     const erc20Decimals = Number(await erc20.decimals().catch(() => contractDecimals));
@@ -154,7 +160,7 @@ export class MembershipService {
       isUpgrade,
       currentTier: tierIndexToName(currentTierIndex),
       tokenAddress,
-      tokenSymbol: requestedSymbol,
+      tokenSymbol: displaySymbol || String(onChainSymbol),
       decimals: contractDecimals,
       amountDueRaw: amountDue.toString(),
       amountDueFormatted: formatAmountDue(amountDue, contractDecimals),
