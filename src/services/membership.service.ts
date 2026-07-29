@@ -58,6 +58,30 @@ async function resolveTokenAddress(tokenSymbol: string): Promise<string> {
   throw new MembershipError('UNSUPPORTED_TOKEN', `Unsupported token: ${tokenSymbol}`);
 }
 
+/** Use the payment token the user picked (USDT/USDC), not the on-chain ERC20 symbol. */
+function normalizeRequestedTokenSymbol(tokenSymbol: string): string {
+  const upper = String(tokenSymbol).toUpperCase();
+  if (upper === 'USDT' || upper === 'USDC') return upper;
+  return upper;
+}
+
+function pow10BigInt(exp: number): bigint {
+  let result = BigInt(1);
+  for (let i = 0; i < exp; i += 1) {
+    result *= BigInt(10);
+  }
+  return result;
+}
+
+/** Scale ERC20 balances/allowances to the contract's tier-price decimal scale. */
+function normalizeAmountToScale(amount: bigint, fromDecimals: number, toDecimals: number): bigint {
+  if (fromDecimals === toDecimals) return amount;
+  if (fromDecimals > toDecimals) {
+    return amount / pow10BigInt(fromDecimals - toDecimals);
+  }
+  return amount * pow10BigInt(toDecimals - fromDecimals);
+}
+
 export interface MembershipQuote {
   tier: string;
   tierIndex: number;
@@ -112,14 +136,17 @@ export class MembershipService {
     const amountDue: bigint = BigInt(price) - BigInt(currentPrice);
 
     const erc20 = getErc20(tokenAddress);
+    const requestedSymbol = normalizeRequestedTokenSymbol(tokenSymbol);
     // tierPrices / amountDue use the contract's internal scale (USDT-like 6), which can
     // differ from ERC20.decimals() on mock tokens (often 18). Format with contract scale.
-    const [allowance, balance, symbol, contractDecimals] = await Promise.all([
+    const [allowance, balance, contractDecimals] = await Promise.all([
       erc20.allowance(walletAddress, CONTRACT_ADDRESS),
       erc20.balanceOf(walletAddress),
-      erc20.symbol().catch(() => tokenSymbol),
       getContractAmountDecimals(),
     ]);
+    const erc20Decimals = Number(await erc20.decimals().catch(() => contractDecimals));
+    const normalizedBalance = normalizeAmountToScale(BigInt(balance), erc20Decimals, contractDecimals);
+    const normalizedAllowance = normalizeAmountToScale(BigInt(allowance), erc20Decimals, contractDecimals);
 
     return {
       tier: tierIndexToName(tierIndex),
@@ -127,15 +154,15 @@ export class MembershipService {
       isUpgrade,
       currentTier: tierIndexToName(currentTierIndex),
       tokenAddress,
-      tokenSymbol: symbol,
+      tokenSymbol: requestedSymbol,
       decimals: contractDecimals,
       amountDueRaw: amountDue.toString(),
       amountDueFormatted: formatAmountDue(amountDue, contractDecimals),
       contractAddress: CONTRACT_ADDRESS,
       allowanceRaw: allowance.toString(),
       balanceRaw: balance.toString(),
-      needsApproval: BigInt(allowance) < amountDue,
-      insufficientBalance: BigInt(balance) < amountDue,
+      needsApproval: normalizedAllowance < amountDue,
+      insufficientBalance: normalizedBalance < amountDue,
     };
   }
 

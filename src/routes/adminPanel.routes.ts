@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { AdminPanelController } from '../controllers/adminPanel.controller';
 import { requireAdminPanelAuth, requireAdminPrivileged } from '../middlewares/adminPanelAuth.middleware';
-import { adminApiRateLimit, adminLoginRateLimit } from '../middlewares/rateLimiter.middleware';
+import { adminApiRateLimit, adminLoginRateLimit, adminRegisterRateLimit } from '../middlewares/rateLimiter.middleware';
 
 const router = Router();
 
 // --- Public (rate-limited) ---
+router.post('/auth/register', adminRegisterRateLimit, AdminPanelController.register);
 router.post('/auth/login', adminLoginRateLimit, AdminPanelController.login);
+router.get('/auth/me', adminApiRateLimit, AdminPanelController.me);
 
 // --- All routes below require admin JWT ---
 router.use(adminApiRateLimit);

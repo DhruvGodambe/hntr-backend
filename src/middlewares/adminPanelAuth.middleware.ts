@@ -14,7 +14,7 @@ declare global {
 
 export function requireAdminPanelAuth(req: Request, res: Response, next: NextFunction): void {
   if (!AdminAuthService.isConfigured()) {
-    sendError(res, 'Admin panel is disabled: ADMIN_PASSWORD is not configured on the server.', 503);
+    sendError(res, 'Admin panel authentication is not configured on the server.', 503);
     return;
   }
 

@@ -1,9 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import { ENV } from '../config/env';
 import { AdminAuthService } from '../services/adminAuth.service';
+import { AdminAccountService, AdminAccountError } from '../services/adminAccount.service';
 import { AdminPanelService, AdminPanelError } from '../services/adminPanel.service';
 import { parsePagination } from '../utils/pagination';
 import { sendSuccess, sendError } from '../utils/response';
+import { validateAdminPassword, validateAdminUsername } from '../utils/adminCredentials';
 
 function paramString(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value[0] ?? '';
@@ -19,30 +21,134 @@ function handlePanelError(err: unknown, res: Response, next: NextFunction) {
 }
 
 export class AdminPanelController {
-  static async login(req: Request, res: Response, next: NextFunction): Promise<void> {
+  static async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      if (!AdminAuthService.isConfigured()) {
-        sendError(res, 'Admin panel is disabled: ADMIN_PASSWORD is not configured.', 503);
+      if (ENV.ADMIN_DB_AUTH === 'false') {
+        sendError(res, 'Database admin registration is disabled.', 503);
         return;
       }
 
-      const { password } = req.body;
-      if (!password || typeof password !== 'string') {
+      const { username, password } = req.body ?? {};
+      const usernameError = validateAdminUsername(typeof username === 'string' ? username : '');
+      if (usernameError) {
+        sendError(res, usernameError, 400, { code: 'INVALID_USERNAME' });
+        return;
+      }
+
+      const passwordError = validateAdminPassword(typeof password === 'string' ? password : '');
+      if (passwordError) {
+        sendError(res, passwordError, 400, { code: 'INVALID_PASSWORD' });
+        return;
+      }
+
+      const totalAccounts = await AdminAccountService.countAllAccounts();
+      const setupSecret = req.headers['x-admin-setup-secret'];
+      const bootstrap = totalAccounts === 0;
+
+      if (!bootstrap) {
+        if (!ENV.ADMIN_SETUP_SECRET) {
+          sendError(res, 'Admin registration is closed. Set ADMIN_SETUP_SECRET to create more accounts.', 403);
+          return;
+        }
+        if (setupSecret !== ENV.ADMIN_SETUP_SECRET) {
+          sendError(res, 'Invalid setup secret.', 403, { code: 'INVALID_SETUP_SECRET' });
+          return;
+        }
+      }
+
+      const account = await AdminAccountService.createAccount(username, password);
+      sendSuccess(res, account, 'Admin account created successfully', 201);
+    } catch (error) {
+      if (error instanceof AdminAccountError) {
+        sendError(res, error.message, error.statusCode, { code: error.code });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  static async login(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!AdminAuthService.isConfigured()) {
+        sendError(res, 'Admin panel authentication is not configured.', 503);
+        return;
+      }
+
+      const { username, password } = req.body ?? {};
+      const hasUsername = typeof username === 'string' && username.trim().length > 0;
+      const hasPassword = typeof password === 'string' && password.length > 0;
+
+      if (!hasPassword) {
         sendError(res, 'Password is required.', 400);
         return;
       }
 
-      if (!AdminAuthService.verifyPassword(password)) {
-        sendError(res, 'Invalid credentials.', 401);
+      let authResult = null;
+
+      if (hasUsername && ENV.ADMIN_DB_AUTH !== 'false') {
+        try {
+          authResult = await AdminAuthService.authenticateWithDatabase(username, password);
+        } catch (err) {
+          if (err instanceof Error && err.message === 'ACCOUNT_LOCKED') {
+            sendError(res, 'Too many failed login attempts. Try again in 15 minutes.', 429, { code: 'ACCOUNT_LOCKED' });
+            return;
+          }
+          throw err;
+        }
+      } else if (!hasUsername && ENV.ADMIN_PASSWORD) {
+        authResult = AdminAuthService.authenticateWithEnvPassword(password);
+      } else if (hasUsername) {
+        sendError(res, 'Database admin authentication is disabled.', 503);
+        return;
+      } else {
+        sendError(res, 'Username is required.', 400);
         return;
       }
 
-      const token = AdminAuthService.issueToken();
-      const expiresAt = Date.now() + ENV.ADMIN_TOKEN_TTL_SECONDS * 1000;
+      if (!authResult) {
+        sendError(res, 'Invalid credentials.', 401, { code: 'INVALID_CREDENTIALS' });
+        return;
+      }
 
-      sendSuccess(res, { token, expiresAt, role: 'admin' }, 'Admin authenticated successfully');
+      sendSuccess(
+        res,
+        {
+          token: authResult.token,
+          expiresAt: authResult.expiresAt,
+          role: authResult.role,
+          username: authResult.username,
+        },
+        'Admin authenticated successfully',
+      );
     } catch (error) {
       next(error);
+    }
+  }
+
+  static async me(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const header = req.headers.authorization;
+      const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+      if (!token) {
+        sendError(res, 'Admin authentication required.', 401);
+        return;
+      }
+
+      const payload = AdminAuthService.verifyToken(token);
+      if (payload.sub === 'admin-panel') {
+        sendSuccess(res, { id: payload.sub, username: payload.username || 'admin' }, 'Admin profile retrieved');
+        return;
+      }
+
+      const profile = await AdminAccountService.getPublicProfile(payload.sub);
+      if (!profile) {
+        sendError(res, 'Admin account not found or inactive.', 401);
+        return;
+      }
+
+      sendSuccess(res, profile, 'Admin profile retrieved');
+    } catch (error) {
+      sendError(res, 'Invalid or expired admin session. Please sign in again.', 401);
     }
   }
 

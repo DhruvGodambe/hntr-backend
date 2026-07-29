@@ -1,8 +1,57 @@
 import User, { IUser } from '../models/User';
 import { Tier, Rank } from '../constants';
 
+export class UserError extends Error {
+  code: string;
+  statusCode: number;
+
+  constructor(code: string, message: string, statusCode = 400) {
+    super(message);
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
 export class UserService {
-  
+  static isRootAdminUser(user: IUser): boolean {
+    return user.type === 'admin' || user.username.toLowerCase() === 'admin';
+  }
+
+  static async assertSponsorEligible(sponsorUsername: string): Promise<IUser> {
+    const normalized = sponsorUsername.trim();
+    if (!normalized) {
+      throw new UserError('SPONSOR_REQUIRED', 'Sponsor username is required.', 400);
+    }
+
+    const sponsor =
+      normalized.toLowerCase() === 'admin'
+        ? await User.findOne({ $or: [{ username: 'admin' }, { type: 'admin' }] })
+        : await User.findOne({ username: normalized });
+    if (!sponsor) {
+      throw new UserError('SPONSOR_NOT_FOUND', 'Sponsor not found', 404);
+    }
+
+    const syncedSponsor = await this.syncUserTierWithBlockchain(sponsor);
+
+    if (
+      !this.isRootAdminUser(syncedSponsor) &&
+      (!syncedSponsor.tier || syncedSponsor.tier === Tier.NONE)
+    ) {
+      throw new UserError(
+        'SPONSOR_NO_MEMBERSHIP',
+        'This sponsor does not have an active membership plan. Ask your referrer to purchase a membership first.',
+        400,
+      );
+    }
+
+    return syncedSponsor;
+  }
+
+  static async validateSponsor(sponsorUsername: string): Promise<{ username: string; tier: string }> {
+    const sponsor = await this.assertSponsorEligible(sponsorUsername);
+    return { username: sponsor.username, tier: sponsor.tier };
+  }
+
   static async registerUser(data: {
     username: string;
     walletAddress: string;
@@ -14,12 +63,9 @@ export class UserService {
 
     let ancestors: string[] = [];
     if (sponsorUsername) {
-      const sponsor = await User.findOne({ username: sponsorUsername });
-      if (!sponsor) {
-        throw new Error('Sponsor not found');
-      }
-      ancestors = [...sponsor.ancestors, sponsorUsername];
-      
+      const sponsor = await this.assertSponsorEligible(sponsorUsername);
+      ancestors = [...sponsor.ancestors, sponsor.username];
+
       sponsor.directDownline.push(username);
       await sponsor.save();
     }
@@ -36,7 +82,7 @@ export class UserService {
       tier: Tier.NONE,
       rank: Rank.NONE,
       teamVolume: 0,
-      legVolumes: {}
+      legVolumes: {},
     });
 
     await newUser.save();
@@ -59,7 +105,7 @@ export class UserService {
       const { hntrContract } = await import('./contract.service');
       const onChainData = await hntrContract.getUser(user.walletAddress);
       const tierIndex = Number(onChainData[0]);
-      
+
       const tierLevels = [Tier.NONE, Tier.BRONZE, Tier.SILVER, Tier.GOLD, Tier.PLATINUM, Tier.DIAMOND];
       const onchainTier = tierLevels[tierIndex] || Tier.NONE;
 

@@ -65,5 +65,8 @@ export function rateLimit(options: { windowMs: number; max: number; keyPrefix?: 
 /** Stricter limits for authentication endpoints. */
 export const adminLoginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, keyPrefix: 'admin-login' });
 
+/** Limits for admin account registration. */
+export const adminRegisterRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, keyPrefix: 'admin-register' });
+
 /** General admin API rate limit — generous but prevents abuse. */
 export const adminApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefix: 'admin-api' });

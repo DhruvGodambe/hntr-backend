@@ -38,6 +38,11 @@ export const ENV = {
   // Left empty by default, which makes those routes always reject.
   ADMIN_SECRET: process.env.ADMIN_SECRET || '',
   // Password for the admin panel web UI (POST /api/admin/auth/login).
+  // Legacy fallback when username is omitted. DB-backed admin accounts are preferred.
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
+  // When not "false", enables DB-backed admin username/password auth.
+  ADMIN_DB_AUTH: process.env.ADMIN_DB_AUTH || 'true',
+  // Required to create additional admin accounts after the first bootstrap account.
+  ADMIN_SETUP_SECRET: process.env.ADMIN_SETUP_SECRET || '',
   ADMIN_TOKEN_TTL_SECONDS: Number(process.env.ADMIN_TOKEN_TTL_SECONDS || 3600),
 };
