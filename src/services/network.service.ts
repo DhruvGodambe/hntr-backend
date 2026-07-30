@@ -215,7 +215,7 @@ export class NetworkService {
   }
 
   /**
-   * evaluateRank applies the 40/40/20 rule to determine rank upgrades.
+   * evaluateRank applies the 40% per-leg cap rule to determine rank upgrades.
    */
   static async evaluateRank(username: string): Promise<string> {
     const user = await User.findOne({ username });
@@ -225,13 +225,12 @@ export class NetworkService {
     const legVolumes = await this.calculateLegVolumes(username);
     const volumesArray = Array.from(legVolumes.values()).sort((a, b) => b - a);
     
-    const totalVolume = user.teamVolume;
     const userTierLevel = this.getTierLevel(user.tier);
     
     let newRank = user.rank;
     
     for (const rank of RANK_REQUIREMENTS) {
-        if (this.check404020(volumesArray, rank.volumeReq)) {
+        if (this.checkLegCap40(volumesArray, rank.volumeReq)) {
              if (userTierLevel >= this.getRequiredTierLevelForRank(rank.name)) {
                  newRank = rank.name as any;
                  break; // Found the highest qualifying rank
@@ -357,24 +356,18 @@ export class NetworkService {
     }
   }
 
-  private static check404020(sortedVolumes: number[], reqVol: number): boolean {
+  /**
+   * Each leg may contribute at most 40% of the rank goal. Qualifying volume is the
+   * sum of per-leg capped amounts (no separate 20% weak-leg bucket).
+   */
+  private static checkLegCap40(sortedVolumes: number[], reqVol: number): boolean {
     if (sortedVolumes.length === 0) return false;
-    
-    const maxLeg40 = reqVol * 0.40;
-    const maxRest20 = reqVol * 0.20;
-    
-    let vol1 = sortedVolumes[0] || 0;
-    let vol2 = sortedVolumes[1] || 0;
-    
-    let restVol = 0;
-    for (let i = 2; i < sortedVolumes.length; i++) {
-        restVol += sortedVolumes[i];
-    }
-    
+
+    const maxPerLeg = reqVol * 0.4;
     let effectiveVol = 0;
-    effectiveVol += Math.min(vol1, maxLeg40);
-    effectiveVol += Math.min(vol2, maxLeg40);
-    effectiveVol += Math.min(restVol, maxRest20); // Correctly capped at 20%
+    for (const vol of sortedVolumes) {
+      effectiveVol += Math.min(vol, maxPerLeg);
+    }
 
     return effectiveVol >= reqVol;
   }
@@ -406,7 +399,7 @@ export class NetworkService {
   }
 
   /** Computes how far a user's qualifying volume is towards their next rank threshold.
-   * Uses the 40/40/20 leg cap rule so a single whale leg cannot carry the progress bar.
+   * Uses the 40% per-leg cap so a single whale leg cannot carry the progress bar.
    */
   static getRankProgress(
     rank: string,
@@ -437,29 +430,25 @@ export class NetworkService {
     const entries = legVolumes instanceof Map ? Array.from(legVolumes.entries()) : Object.entries(legVolumes || {});
     const sortedVolumes = entries.map(([, volume]) => volume).sort((a, b) => b - a);
 
-    const maxLeg40 = goal * 0.4;
-    const maxRest20 = goal * 0.2;
-
+    const maxPerLeg = goal * 0.4;
     let effectiveVol = 0;
-    effectiveVol += Math.min(sortedVolumes[0] || 0, maxLeg40);
-    effectiveVol += Math.min(sortedVolumes[1] || 0, maxLeg40);
-    effectiveVol += Math.min(sortedVolumes.slice(2).reduce((sum, v) => sum + v, 0), maxRest20);
+    for (const vol of sortedVolumes) {
+      effectiveVol += Math.min(vol, maxPerLeg);
+    }
 
     return effectiveVol;
   }
 
   /**
-   * Applies the same 40/40/20 rule used by evaluateRank/check404020 to the user's
-   * *current* legVolumes against the goal for their *next* rank, so the frontend
-   * can show real "how close am I" leg-by-leg progress instead of static numbers.
+   * Applies the same 40% per-leg cap used by evaluateRank to the user's current
+   * legVolumes against the goal for their next rank, for the network progress UI.
    */
   static getLegBreakdown(legVolumes: Map<string, number> | Record<string, number> | undefined, progress: RankProgress): LegBreakdown {
     const entries = legVolumes instanceof Map ? Array.from(legVolumes.entries()) : Object.entries(legVolumes || {});
     entries.sort((a, b) => b[1] - a[1]);
 
     const goal = progress.nextThreshold ?? progress.currentThreshold;
-    const maxLeg40 = goal * 0.4;
-    const maxRest20 = goal * 0.2;
+    const maxPerLeg = goal * 0.4;
 
     const toLegProgress = (label: string, volume: number, cap: number): LegProgress => ({
       label,
@@ -470,14 +459,15 @@ export class NetworkService {
 
     const [leg1, leg2, ...rest] = entries;
     const restVolume = rest.reduce((sum, [, volume]) => sum + volume, 0);
+    const restCap = maxPerLeg * Math.max(rest.length, 1);
     const restLabel = rest.length === 0 ? 'No other legs yet' : rest.length === 1 ? rest[0][0] : `${rest.length} other legs`;
 
     return {
       competitive: [
-        toLegProgress(leg1?.[0] || 'No leg yet', leg1?.[1] || 0, maxLeg40),
-        toLegProgress(leg2?.[0] || 'No leg yet', leg2?.[1] || 0, maxLeg40),
+        toLegProgress(leg1?.[0] || 'No leg yet', leg1?.[1] || 0, maxPerLeg),
+        toLegProgress(leg2?.[0] || 'No leg yet', leg2?.[1] || 0, maxPerLeg),
       ],
-      weakest: toLegProgress(restLabel, restVolume, maxRest20),
+      weakest: toLegProgress(restLabel, restVolume, restCap),
     };
   }
 
