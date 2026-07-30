@@ -315,6 +315,48 @@ export class NetworkService {
     return results;
   }
 
+  /** Global gate so overlapping volume reconcile crons cannot run two full passes at once. */
+  private static reconcileAllVolumesInFlight: Promise<{ updated: number; failed: number }> | null = null;
+
+  /**
+   * Recalculates leg volumes + ranks for every user. Intended for cron backfill when
+   * the blockchain listener misses a purchase/upgrade upline update.
+   */
+  static async recalculateAllVolumes(): Promise<{ updated: number; failed: number }> {
+    if (this.reconcileAllVolumesInFlight) {
+      logger.warn('Volume reconciliation already in progress; skipping overlapping run');
+      return this.reconcileAllVolumesInFlight;
+    }
+
+    this.reconcileAllVolumesInFlight = (async () => {
+      const usernames = await User.distinct('username');
+      logger.info(`Recalculating leg volumes for ${usernames.length} users`);
+
+      let updated = 0;
+      let failed = 0;
+
+      for (const username of usernames) {
+        if (!username) continue;
+        try {
+          await this.recalculateVolumes(username);
+          updated += 1;
+        } catch (err: any) {
+          failed += 1;
+          logger.error(`Failed to recalculate volumes for ${username}: ${err.message}`);
+        }
+      }
+
+      logger.info(`Volume reconciliation complete: updated=${updated}, failed=${failed}`);
+      return { updated, failed };
+    })();
+
+    try {
+      return await this.reconcileAllVolumesInFlight;
+    } finally {
+      this.reconcileAllVolumesInFlight = null;
+    }
+  }
+
   private static check404020(sortedVolumes: number[], reqVol: number): boolean {
     if (sortedVolumes.length === 0) return false;
     

@@ -4,7 +4,7 @@ import Transaction from '../models/Transaction';
 import { RewardsService } from '../services/rewards.service';
 import { NetworkService } from '../services/network.service';
 import { CompanyWalletService } from '../services/companyWallet.service';
-import { runMonthlyLeadershipPayout } from '../jobs/leadership-cron';
+import { runMonthlyLeadershipPayout, runAchievementBonusDisbursement } from '../jobs/leadership-cron';
 import { sendSuccess } from '../utils/response';
 
 export class AdminController {
@@ -47,8 +47,8 @@ export class AdminController {
    */
   static async runAchievementPayout(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const payouts = await RewardsService.disbursePendingAchievementBonuses();
-      sendSuccess(res, { payouts }, `Paid ${payouts.length} achievement bonus(es)`);
+      const result = await runAchievementBonusDisbursement();
+      sendSuccess(res, result, `Paid ${result.paid} achievement bonus(es)`);
     } catch (error) {
       next(error);
     }

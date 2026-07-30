@@ -1,7 +1,14 @@
 import cron from 'node-cron';
+import mongoose from 'mongoose';
 import { RewardsService } from '../services/rewards.service';
 import { PointsService } from '../services/points.service';
-import mongoose from 'mongoose';
+import { NetworkService } from '../services/network.service';
+import AchievementBonus from '../models/AchievementBonus';
+import Payout from '../models/Payout';
+import User from '../models/User';
+import { LEADERSHIP_ELIGIBLE_RANKS } from '../constants';
+
+const CRON_TZ = { timezone: 'UTC' as const };
 
 /**
  * Same work as the 1st-of-month leadership cron. Safe to call on demand from admin.
@@ -37,69 +44,184 @@ export async function runMonthlyLeadershipPayout() {
 }
 
 /**
+ * Same work as the daily achievement cron. Safe to call on demand / startup catch-up.
+ */
+export async function runAchievementBonusDisbursement() {
+  if (mongoose.connection.readyState !== 1) {
+    throw new Error('Database not connected. Cannot run achievement disbursement.');
+  }
+
+  console.log('\n======================================================');
+  console.log(`⏰ [ACHIEVEMENT PAYOUT] Starting (manual, cron, or startup)...`);
+  console.log(`Date: ${new Date().toISOString()}`);
+  console.log('======================================================');
+
+  const paid = await RewardsService.disbursePendingAchievementBonuses();
+  console.log(
+    `✅ [ACHIEVEMENT PAYOUT COMPLETE] paid ${paid.length} pending payout(s).`,
+  );
+  for (const p of paid) {
+    console.log(`   • ${p.username}: $${p.amountUSD.toFixed(2)} (${p.rank})`);
+  }
+
+  return { payouts: paid, paid: paid.length };
+}
+
+/**
+ * Backfill entrypoint: only runs achievement disbursement when PENDING rows exist,
+ * so the frequent poll stays quiet when there's nothing to do.
+ */
+async function backfillAchievementBonusesIfNeeded() {
+  if (mongoose.connection.readyState !== 1) return;
+
+  const pendingCount = await AchievementBonus.countDocuments({ status: 'PENDING' });
+  if (pendingCount === 0) return;
+
+  console.log(
+    `⏰ [ACHIEVEMENT BACKFILL] ${pendingCount} PENDING bonus(es) found — disbursing...`,
+  );
+  await runAchievementBonusDisbursement();
+}
+
+/**
+ * Backfill entrypoint: if this UTC month still has eligible leaders with no Payout
+ * row yet, run the monthly distribution. Safe to call daily — already-paid users
+ * are skipped inside calculateMonthlyLeadershipPool.
+ */
+async function backfillLeadershipPayoutIfNeeded() {
+  if (mongoose.connection.readyState !== 1) return;
+
+  const month = new Date().toISOString().slice(0, 7);
+  const eligibleCount = await User.countDocuments({
+    rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
+  });
+  if (eligibleCount === 0) return;
+
+  const paidThisMonth = await Payout.countDocuments({
+    month,
+    status: 'PAID',
+  });
+  if (paidThisMonth >= eligibleCount) return;
+
+  console.log(
+    `⏰ [LEADERSHIP BACKFILL] month=${month} eligible=${eligibleCount} paid=${paidThisMonth} — running distribution...`,
+  );
+  await runMonthlyLeadershipPayout();
+}
+
+/**
  * Initializes all background cron jobs for the HNTR backend.
+ * All schedules use UTC explicitly (node-cron otherwise uses the host local timezone).
  */
 export function initCronJobs() {
-  console.log('🕒 Initializing Background Cron Jobs...');
+  console.log('🕒 Initializing Background Cron Jobs (timezone=UTC)...');
 
-  // Monthly leadership pool: 1st of every month at 00:00 UTC.
-  // Distributes the on-chain leadershipWallet balance pro-rata by LEADERSHIP_SHARES
-  // (Hunter=1, Elite Hunter=3, Master Hunter=7, Legend Hunter=15). Users below Hunter
-  // have 0 shares and are skipped.
-  cron.schedule('0 0 1 * *', async () => {
+  // Primary monthly leadership pool: 1st of every month at 00:00 UTC.
+  cron.schedule(
+    '0 0 1 * *',
+    async () => {
+      try {
+        await runMonthlyLeadershipPayout();
+      } catch (error) {
+        console.error(`❌ [CRON ERROR] Failed to generate leadership payouts:`, error);
+      }
+    },
+    CRON_TZ,
+  );
+
+  // Leadership backfill: every day at 01:00 UTC. Catches a missed 1st-of-month tick
+  // while the process was briefly down / restarted. Already-paid users are skipped.
+  cron.schedule(
+    '0 1 * * *',
+    async () => {
+      try {
+        await backfillLeadershipPayoutIfNeeded();
+      } catch (error) {
+        console.error(`❌ [CRON ERROR] Failed leadership backfill:`, error);
+      }
+    },
+    CRON_TZ,
+  );
+
+  // Primary daily rank achievement bonuses: 00:30 UTC.
+  cron.schedule(
+    '30 0 * * *',
+    async () => {
+      try {
+        await runAchievementBonusDisbursement();
+      } catch (error) {
+        console.error(`❌ [CRON ERROR] Failed to disburse achievement bonuses:`, error);
+      }
+    },
+    CRON_TZ,
+  );
+
+  // Points + leg-volume reconcile + achievement backfill every 10 minutes.
+  // Volume backfill corrects stale legVolumes when the blockchain listener misses
+  // an upline recalculation after purchase/upgrade.
+  cron.schedule(
+    '*/10 * * * *',
+    async () => {
+      console.log(`⏰ [CRON START] Reconciling HNTR points + leg volumes...`);
+
+      try {
+        if (mongoose.connection.readyState !== 1) {
+          console.log('⚠️ Database not connected. Skipping reconciliation.');
+          return;
+        }
+
+        await PointsService.recalculateAllPoints();
+        console.log(`✅ [CRON COMPLETE] HNTR points reconciled.`);
+      } catch (error) {
+        console.error(`❌ [CRON ERROR] Failed to reconcile HNTR points:`, error);
+      }
+
+      try {
+        const volumeResult = await NetworkService.recalculateAllVolumes();
+        console.log(
+          `✅ [CRON COMPLETE] Leg volumes reconciled (updated=${volumeResult.updated}, failed=${volumeResult.failed}).`,
+        );
+      } catch (error) {
+        console.error(`❌ [CRON ERROR] Failed to reconcile leg volumes:`, error);
+      }
+
+      try {
+        await backfillAchievementBonusesIfNeeded();
+      } catch (error) {
+        console.error(`❌ [CRON ERROR] Failed achievement backfill:`, error);
+      }
+    },
+    CRON_TZ,
+  );
+
+  // Immediate catch-up on boot.
+  setImmediate(async () => {
     try {
-      await runMonthlyLeadershipPayout();
+      await backfillAchievementBonusesIfNeeded();
     } catch (error) {
-      console.error(`❌ [CRON ERROR] Failed to generate leadership payouts:`, error);
+      console.error(`❌ [STARTUP] Failed achievement catch-up:`, error);
     }
-  });
-
-  // Daily rank achievement bonuses: 00:30 UTC.
-  // Pays PENDING one-time PDF bonuses from achievementWallet when it holds enough
-  // USDT/USDC for each bonus (oldest first). Underfunded rows stay PENDING.
-  cron.schedule('30 0 * * *', async () => {
-    console.log('\n======================================================');
-    console.log(`⏰ [CRON START] Executing Daily Rank Achievement Disbursement...`);
-    console.log(`Date: ${new Date().toISOString()}`);
-    console.log('======================================================');
 
     try {
-      if (mongoose.connection.readyState !== 1) {
-        console.log('⚠️ Database not connected. Skipping achievement cron job.');
-        return;
-      }
-
-      const paid = await RewardsService.disbursePendingAchievementBonuses();
-      console.log(
-        `✅ [CRON COMPLETE] Achievement bonuses — paid ${paid.length} pending payout(s).`,
-      );
-      for (const p of paid) {
-        console.log(`   • ${p.username}: $${p.amountUSD.toFixed(2)} (${p.rank})`);
-      }
+      await backfillLeadershipPayoutIfNeeded();
     } catch (error) {
-      console.error(`❌ [CRON ERROR] Failed to disburse achievement bonuses:`, error);
+      console.error(`❌ [STARTUP] Failed leadership catch-up:`, error);
     }
-  });
-
-  // Reconcile HNTR points every 10 minutes. The blockchain listener awards points in
-  // real-time; this cron catches any missed events and fixes drift after restarts.
-  cron.schedule('*/10 * * * *', async () => {
-    console.log(`⏰ [CRON START] Reconciling HNTR points...`);
 
     try {
-      if (mongoose.connection.readyState !== 1) {
-        console.log('⚠️ Database not connected. Skipping points reconciliation.');
-        return;
+      if (mongoose.connection.readyState === 1) {
+        const volumeResult = await NetworkService.recalculateAllVolumes();
+        console.log(
+          `✅ [STARTUP] Leg volumes reconciled (updated=${volumeResult.updated}, failed=${volumeResult.failed}).`,
+        );
       }
-
-      await PointsService.recalculateAllPoints();
-      console.log(`✅ [CRON COMPLETE] HNTR points reconciled.`);
     } catch (error) {
-      console.error(`❌ [CRON ERROR] Failed to reconcile HNTR points:`, error);
+      console.error(`❌ [STARTUP] Failed volume catch-up:`, error);
     }
   });
 
   console.log(
-    '🕒 Cron jobs successfully scheduled (leadership: 0 0 1 * *, achievement: 30 0 * * *, points: */10 * * * *).',
+    '🕒 Cron jobs scheduled (UTC): leadership 0 0 1 * *, leadership backfill 0 1 * * *, ' +
+      'achievement 30 0 * * *, points+volumes+achievement-backfill */10 * * * *, startup catch-up enabled.',
   );
 }
