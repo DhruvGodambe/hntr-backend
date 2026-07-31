@@ -46,7 +46,10 @@ export class NetworkController {
   static async getNetworkTree(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { username } = req.params;
-      const depth = Math.min(Number(req.query.depth) || 3, 4);
+      // Match frontend NETWORK_TREE_DEPTH_OPTIONS (3/6/9/12). Cap at 12 to bound recursion.
+      const requested = Number(req.query.depth) || 3;
+      const allowed = [3, 6, 9, 12];
+      const depth = allowed.includes(requested) ? requested : Math.min(Math.max(requested, 1), 12);
       const tree = await NetworkService.getNetworkTree(username as string, depth);
       if (!tree) {
         sendError(res, 'User not found', 404);
