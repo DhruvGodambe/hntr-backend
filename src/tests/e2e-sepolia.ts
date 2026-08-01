@@ -12,7 +12,7 @@ import { hntrContract, provider, CONTRACT_ADDRESS } from '../services/contract.s
 
 /**
  * LIVE SEPOLIA FULL COMMISSION FLOW TEST
- * Tests the entire commission logic including: multi-level uplines, dynamic compression, 
+ * Tests the entire commission logic including: multi-level uplines, fixed-level forfeit (no compression), 
  * 80/20 liquid/locked splits, treasury breakage, and withdrawal.
  */
 async function runFullCommissionFlow() {

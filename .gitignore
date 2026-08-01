@@ -66,6 +66,9 @@ typings/
 # Generated protocol wallet keys - never commit
 generated-wallets.env
 
+# Local DB JSON dumps (may contain PII)
+backups/
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 
