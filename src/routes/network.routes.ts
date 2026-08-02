@@ -9,6 +9,7 @@ router.get('/:username/downline', NetworkController.getDownline);
 router.get('/:username/tree', NetworkController.getNetworkTree);
 
 router.post('/claim', requireWalletAuth, NetworkController.claimCommissions);
+router.post('/relay/fail', requireWalletAuth, NetworkController.failPendingRelay);
 router.get('/transactions/:walletAddress', NetworkController.getTransactions);
 router.get('/:walletAddress/rewards-summary', NetworkController.getRewardsSummary);
 router.get('/:walletAddress/leadership-payouts', NetworkController.getLeadershipPayouts);

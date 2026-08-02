@@ -31,3 +31,31 @@ export async function findActivePendingRelay(
   }
   return pending;
 }
+
+/**
+ * Marks a PENDING relay as FAILED (e.g. user rejected the wallet prompt).
+ * Only the owning wallet can fail its own relay; already-finalized rows are a no-op.
+ */
+export async function failPendingRelay(params: {
+  walletAddress: string;
+  pendingTransactionId: string;
+  reason?: string;
+}): Promise<ITransaction | null> {
+  const pending = await Transaction.findById(params.pendingTransactionId);
+  if (!pending) return null;
+
+  if (pending.walletAddress.toLowerCase() !== params.walletAddress.toLowerCase()) {
+    throw new Error('Not authorized to fail this transaction');
+  }
+
+  if (pending.status !== 'PENDING') {
+    return pending;
+  }
+
+  pending.status = 'FAILED';
+  pending.errorMessage =
+    (params.reason && String(params.reason).slice(0, 500)) ||
+    'Wallet request was cancelled or failed before confirmation.';
+  await pending.save();
+  return pending;
+}

@@ -11,7 +11,7 @@ import { ENV } from '../config/env';
 import Transaction from '../models/Transaction';
 import Payout from '../models/Payout';
 import AchievementBonus from '../models/AchievementBonus';
-import { findActivePendingRelay } from '../utils/staleTransactions';
+import { failPendingRelay as markPendingRelayFailed, findActivePendingRelay } from '../utils/staleTransactions';
 import { sendSuccess, sendError } from '../utils/response';
 
 const TIER_NAMES = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'];
@@ -102,6 +102,51 @@ export class NetworkController {
         },
         'Commission claim prepared; submit withdrawCommissions() from your wallet',
       );
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Marks a prepared PENDING relay (claim / purchase / upgrade) as FAILED when the
+   * user rejects the wallet prompt or the client aborts before on-chain confirmation.
+   */
+  static async failPendingRelay(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const walletAddress = req.walletAddress!;
+      const { pendingTransactionId, reason } = req.body || {};
+
+      if (!pendingTransactionId || typeof pendingTransactionId !== 'string') {
+        sendError(res, 'pendingTransactionId is required', 400);
+        return;
+      }
+
+      try {
+        const updated = await markPendingRelayFailed({
+          walletAddress,
+          pendingTransactionId,
+          reason: typeof reason === 'string' ? reason : undefined,
+        });
+        if (!updated) {
+          sendError(res, 'Transaction not found', 404);
+          return;
+        }
+        sendSuccess(
+          res,
+          {
+            pendingTransactionId: updated._id.toString(),
+            status: updated.status,
+            type: updated.type,
+          },
+          updated.status === 'FAILED' ? 'Pending relay marked as failed' : 'Transaction already finalized',
+        );
+      } catch (err: any) {
+        if (err?.message === 'Not authorized to fail this transaction') {
+          sendError(res, err.message, 403);
+          return;
+        }
+        throw err;
+      }
     } catch (error) {
       next(error);
     }
