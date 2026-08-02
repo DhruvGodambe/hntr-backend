@@ -11,7 +11,7 @@ import { ENV } from '../config/env';
 import Transaction from '../models/Transaction';
 import Payout from '../models/Payout';
 import AchievementBonus from '../models/AchievementBonus';
-import { failPendingRelay as markPendingRelayFailed, findActivePendingRelay } from '../utils/staleTransactions';
+import { failPendingRelay as markPendingRelayFailed, findActivePendingRelay, submitPendingRelay } from '../utils/staleTransactions';
 import { sendSuccess, sendError } from '../utils/response';
 
 const TIER_NAMES = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'];
@@ -75,13 +75,13 @@ export class NetworkController {
         return;
       }
 
-      const pending = await findActivePendingRelay(walletAddress, 'COMMISSION_CLAIM');
+      const normalizedToken = String(token).toLowerCase();
+      const pending = await findActivePendingRelay(walletAddress, 'COMMISSION_CLAIM', normalizedToken);
       if (pending) {
-        sendError(res, 'A commission claim for this wallet is already in progress.', 409);
+        sendError(res, 'A commission claim for this token is already in progress.', 409);
         return;
       }
 
-      const normalizedToken = String(token).toLowerCase();
       const txnRecord = await Transaction.create({
         walletAddress: walletAddress.toLowerCase(),
         type: 'COMMISSION_CLAIM',
@@ -142,6 +142,55 @@ export class NetworkController {
         );
       } catch (err: any) {
         if (err?.message === 'Not authorized to fail this transaction') {
+          sendError(res, err.message, 403);
+          return;
+        }
+        throw err;
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Attaches the broadcast tx hash to a PENDING relay immediately after wallet submit.
+   */
+  static async submitPendingRelay(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const walletAddress = req.walletAddress!;
+      const { pendingTransactionId, txHash } = req.body || {};
+
+      if (!pendingTransactionId || typeof pendingTransactionId !== 'string') {
+        sendError(res, 'pendingTransactionId is required', 400);
+        return;
+      }
+      if (!txHash || typeof txHash !== 'string' || !txHash.startsWith('0x')) {
+        sendError(res, 'txHash is required', 400);
+        return;
+      }
+
+      try {
+        const updated = await submitPendingRelay({
+          walletAddress,
+          pendingTransactionId,
+          txHash,
+        });
+        if (!updated) {
+          sendError(res, 'Transaction not found', 404);
+          return;
+        }
+        sendSuccess(
+          res,
+          {
+            pendingTransactionId: updated._id.toString(),
+            status: updated.status,
+            txHash: updated.txHash,
+            type: updated.type,
+          },
+          'Pending relay updated with tx hash',
+        );
+      } catch (err: any) {
+        if (err?.message === 'Not authorized to update this transaction') {
           sendError(res, err.message, 403);
           return;
         }

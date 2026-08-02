@@ -10,6 +10,7 @@ router.get('/:username/tree', NetworkController.getNetworkTree);
 
 router.post('/claim', requireWalletAuth, NetworkController.claimCommissions);
 router.post('/relay/fail', requireWalletAuth, NetworkController.failPendingRelay);
+router.post('/relay/submit', requireWalletAuth, NetworkController.submitPendingRelay);
 router.get('/transactions/:walletAddress', NetworkController.getTransactions);
 router.get('/:walletAddress/rewards-summary', NetworkController.getRewardsSummary);
 router.get('/:walletAddress/leadership-payouts', NetworkController.getLeadershipPayouts);

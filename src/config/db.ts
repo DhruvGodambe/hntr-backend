@@ -27,6 +27,28 @@ async function ensureTransactionIndexes() {
       logger.info('Dropped old txHash_1 unique index from transactions collection');
     }
 
+    // Legacy pending lock was per wallet+type only, which blocked USDC claims while a
+    // USDT COMMISSION_CLAIM was still PENDING. Replace with wallet+type+token.
+    const legacyPendingLock = txIndexes.find((i) => i.name === 'walletAddress_1_type_1');
+    if (legacyPendingLock) {
+      await txCollection.dropIndex('walletAddress_1_type_1');
+      logger.info('Dropped legacy walletAddress_1_type_1 pending unique index');
+    }
+
+    const pendingLockName = 'walletAddress_1_type_1_token_1';
+    const pendingLock = txIndexes.find((i) => i.name === pendingLockName);
+    if (!pendingLock) {
+      await txCollection.createIndex(
+        { walletAddress: 1, type: 1, token: 1 },
+        {
+          unique: true,
+          name: pendingLockName,
+          partialFilterExpression: { status: 'PENDING' },
+        },
+      );
+      logger.info(`Created ${pendingLockName} partial unique pending-relay index`);
+    }
+
     // Replace compound sparse unique with a partial unique on real txHash strings.
     // Sparse compound indexes still indexed PENDING/FAILED stubs (walletAddress/type/token
     // present, txHash null), so a second claim for the same wallet+token hit E11000.

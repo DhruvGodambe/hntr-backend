@@ -655,9 +655,10 @@ export class BlockchainService {
       token: normalizedToken,
     });
     if (existingByHash) {
-      if (existingByHash.status === 'PENDING') {
+      if (existingByHash.status === 'PENDING' || !existingByHash.amount) {
         existingByHash.status = 'CONFIRMED';
         existingByHash.amount = withdrawn;
+        existingByHash.token = normalizedToken;
         existingByHash.timestamp = new Date();
         await existingByHash.save();
       }
@@ -669,6 +670,7 @@ export class BlockchainService {
       walletAddress: normalizedWallet,
       type: 'COMMISSION_CLAIM',
       status: 'PENDING',
+      token: normalizedToken,
     });
     if (pending) {
       pending.txHash = normalizedHash;

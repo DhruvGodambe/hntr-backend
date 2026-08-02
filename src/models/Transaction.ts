@@ -85,11 +85,11 @@ TransactionSchema.index(
   },
 );
 
-// Prevent a second PURCHASE/UPGRADE/COMMISSION_CLAIM relay from being submitted for the same wallet
-// while one is still in flight (e.g. a double-click, or a retried request racing a
-// backend restart).
+// Prevent a second PURCHASE/UPGRADE/COMMISSION_CLAIM relay from being submitted for the
+// same wallet+type+token while one is still in flight. Token is part of the key so a
+// USDT commission claim does not block a simultaneous/sequential USDC claim (and vice versa).
 TransactionSchema.index(
-  { walletAddress: 1, type: 1 },
+  { walletAddress: 1, type: 1, token: 1 },
   {
     unique: true,
     partialFilterExpression: { status: 'PENDING' },
