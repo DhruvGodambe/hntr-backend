@@ -11,7 +11,7 @@ import { CompanyWalletService } from './companyWallet.service';
 import { hntrContract, getErc20, getContractAmountDecimals } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
-import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares } from '../constants';
+import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares, getRankLadderIndex } from '../constants';
 import { paginatedResponse, sanitizeSearch } from '../utils/pagination';
 import { logger } from '../utils/logger';
 import { runMonthlyLeadershipPayout } from '../jobs/leadership-cron';
@@ -382,6 +382,7 @@ export class AdminPanelService {
         downlines: downlineCounts[idx],
         status: isBlocked ? 'Blocked' : 'Active',
         isBlocked,
+        isForcedRank: Boolean(u.isForcedRank) || Boolean(override?.rankOverride),
         joinedAt: u.joinedAt,
         actualTier: u.tier,
         actualRank: u.rank,
@@ -432,9 +433,29 @@ export class AdminPanelService {
     const nextTier = tier !== undefined ? tier : user.tier;
     const nextRank = rank !== undefined ? rank : user.rank;
 
+    const isForced = Boolean(user.isForcedRank);
+    if (rank !== undefined && isForced) {
+      const prevIdx = getRankLadderIndex(previousRank);
+      const nextIdx = getRankLadderIndex(nextRank);
+      if (nextIdx < prevIdx) {
+        throw new AdminPanelError(
+          'FORCED_RANK_DOWNGRADE',
+          `Cannot rank down a forced-rank user (${previousRank} → ${nextRank}). Raise their rank or wait until volume qualifies.`,
+          400,
+        );
+      }
+    }
+
     // Write through to User — network/rewards APIs read User.rank / User.tier directly.
     user.tier = nextTier as typeof user.tier;
     user.rank = nextRank as typeof user.rank;
+
+    // Any admin-assigned rank change (or reinforcing a higher forced rank) marks the user forced.
+    // Achievement bonuses are NOT enqueued here — they pay when evaluateRank sees volume qualify.
+    if (rank !== undefined && nextRank !== previousRank) {
+      user.isForcedRank = true;
+    }
+
     await user.save();
 
     const override = await AdminUserOverride.findOneAndUpdate(
@@ -442,23 +463,13 @@ export class AdminPanelService {
       {
         $set: {
           tierOverride: nextTier !== previousTier ? nextTier : null,
-          rankOverride: nextRank !== previousRank ? nextRank : null,
+          rankOverride: nextRank !== previousRank || user.isForcedRank ? nextRank : null,
         },
       },
       { upsert: true, new: true },
     );
 
     if (rank !== undefined && nextRank !== previousRank) {
-      try {
-        await RewardsService.enqueueAchievementBonuses(user, previousRank, nextRank);
-      } catch (err: unknown) {
-        logger.error(
-          `Failed to enqueue achievement bonuses after admin rank override for ${username}: ${
-            err instanceof Error ? err.message : err
-          }`,
-        );
-      }
-
       try {
         const { NotificationService } = await import('./notification.service');
         const shares = getLeadershipShares(nextRank);
@@ -468,10 +479,16 @@ export class AdminPanelService {
           title: `Rank upgraded to ${nextRank}`,
           sub:
             shares > 0
-              ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool.`
-              : `Keep growing — Hunter rank and above unlock leadership pool shares.`,
+              ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool. Achievement bonuses unlock as your team volume qualifies.`
+              : `Keep growing — Hunter rank and above unlock leadership pool shares. Achievement bonuses unlock as your team volume qualifies.`,
           link: 'VIEW NETWORK',
-          meta: { previousRank, newRank: nextRank, shares, source: 'admin_override' },
+          meta: {
+            previousRank,
+            newRank: nextRank,
+            shares,
+            source: 'admin_override',
+            isForcedRank: true,
+          },
         });
       } catch (err: unknown) {
         logger.error(
@@ -484,6 +501,7 @@ export class AdminPanelService {
       username: user.username,
       tier: user.tier,
       rank: user.rank,
+      isForcedRank: Boolean(user.isForcedRank),
       previousRank,
       previousTier,
       tierOverride: override.tierOverride ?? null,

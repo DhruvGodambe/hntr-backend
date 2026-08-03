@@ -59,8 +59,10 @@ export class RewardsService {
   }
 
   /**
-   * On rank upgrade, create PENDING AchievementBonus rows for every newly crossed
-   * rank (unique per wallet+rank). Does not pay — the daily cron does that when
+   * Create PENDING AchievementBonus rows for every rank newly crossed between
+   * previousRank → newRank (unique per wallet+rank). Prefer calling with
+   * previousRank=None and newRank=volume-qualified rank so forced display ranks
+   * never unlock bonuses early. Does not pay — the daily cron does that when
    * achievementWallet is funded enough.
    */
   static async enqueueAchievementBonuses(

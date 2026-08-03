@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import User, { IUser } from '../models/User';
 import AdminUserOverride from '../models/AdminUserOverride';
-import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank } from '../constants';
+import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank, getRankLadderIndex } from '../constants';
 import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
@@ -216,6 +216,8 @@ export class NetworkService {
 
   /**
    * evaluateRank applies the 40% per-leg cap rule to determine rank upgrades.
+   * Forced-rank users keep their admin-assigned display rank until volume catches
+   * up; achievement bonuses only enqueue for volume-qualified ranks.
    */
   static async evaluateRank(username: string): Promise<string> {
     const user = await User.findOne({ username });
@@ -224,55 +226,93 @@ export class NetworkService {
     // Make sure we have latest volumes
     const legVolumes = await this.calculateLegVolumes(username);
     const volumesArray = Array.from(legVolumes.values()).sort((a, b) => b - a);
-    
+
     const userTierLevel = this.getTierLevel(user.tier);
-    
-    let newRank = user.rank;
-    
+
+    let volumeQualifiedRank: string = Rank.NONE;
     for (const rank of RANK_REQUIREMENTS) {
-        if (this.checkLegCap40(volumesArray, rank.volumeReq)) {
-             if (userTierLevel >= this.getRequiredTierLevelForRank(rank.name)) {
-                 newRank = rank.name as any;
-                 break; // Found the highest qualifying rank
-             }
+      if (this.checkLegCap40(volumesArray, rank.volumeReq)) {
+        if (userTierLevel >= this.getRequiredTierLevelForRank(rank.name)) {
+          volumeQualifiedRank = rank.name;
+          break; // Highest qualifying rank (RANK_REQUIREMENTS is descending)
         }
+      }
     }
 
-    if (newRank !== user.rank) {
-        const previousRank = user.rank;
-        user.rank = newRank as any;
-        await user.save();
-        logger.info(`Rank updated off-chain for ${user.walletAddress}: ${previousRank} -> ${newRank}`);
+    const previousDisplayRank = user.rank;
+    let displayRank = volumeQualifiedRank as typeof user.rank;
+    let clearedForcedRank = false;
 
-        const { NotificationService } = await import('./notification.service');
-        const { getLeadershipShares } = await import('../constants');
-        const { RewardsService } = await import('./rewards.service');
-        const shares = getLeadershipShares(newRank);
-
+    if (user.isForcedRank) {
+      const forcedIdx = getRankLadderIndex(user.rank);
+      const organicIdx = getRankLadderIndex(volumeQualifiedRank);
+      if (organicIdx >= forcedIdx) {
+        // Volume has caught up to (or passed) the forced rank — clear the force flag.
+        user.isForcedRank = false;
+        displayRank = volumeQualifiedRank as typeof user.rank;
+        clearedForcedRank = true;
         try {
-          await RewardsService.enqueueAchievementBonuses(user, previousRank, newRank);
-        } catch (enqueueErr: any) {
-          logger.error(
-            `Failed to enqueue achievement bonuses for ${user.username}: ${enqueueErr.message}`,
+          await AdminUserOverride.findOneAndUpdate(
+            { username: user.username.toLowerCase() },
+            { $set: { rankOverride: null } },
           );
+        } catch (err: any) {
+          logger.error(`Failed to clear rankOverride for ${user.username}: ${err.message}`);
         }
+      } else {
+        // Keep the higher forced display rank; do not demote.
+        displayRank = user.rank;
+      }
+    }
 
-        await NotificationService.createQuiet({
-          walletAddress: user.walletAddress,
-          type: 'RANK_UP',
-          title: `Rank upgraded to ${newRank}`,
-          sub:
-            shares > 0
-              ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool.`
-              : `Keep growing — Hunter rank and above unlock leadership pool shares.`,
-          link: 'VIEW NETWORK',
-          meta: { previousRank, newRank, shares },
-        });
+    const displayChanged = displayRank !== previousDisplayRank;
+    if (displayChanged) {
+      user.rank = displayRank;
+    }
+
+    if (displayChanged || clearedForcedRank) {
+      await user.save();
+    }
+
+    if (displayChanged) {
+      logger.info(
+        `Rank updated off-chain for ${user.walletAddress}: ${previousDisplayRank} -> ${displayRank}` +
+          (clearedForcedRank ? ' (forced rank cleared by volume)' : ''),
+      );
+
+      const { NotificationService } = await import('./notification.service');
+      const { getLeadershipShares } = await import('../constants');
+      const shares = getLeadershipShares(displayRank);
+
+      await NotificationService.createQuiet({
+        walletAddress: user.walletAddress,
+        type: 'RANK_UP',
+        title: `Rank upgraded to ${displayRank}`,
+        sub:
+          shares > 0
+            ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool.`
+            : `Keep growing — Hunter rank and above unlock leadership pool shares.`,
+        link: 'VIEW NETWORK',
+        meta: { previousRank: previousDisplayRank, newRank: displayRank, shares },
+      });
+    }
+
+    // Achievement bonuses follow volume qualification only (never the forced display jump).
+    // Unique (wallet, rank) index skips ranks already queued/paid.
+    if (volumeQualifiedRank !== Rank.NONE) {
+      try {
+        const { RewardsService } = await import('./rewards.service');
+        await RewardsService.enqueueAchievementBonuses(user, Rank.NONE, volumeQualifiedRank);
+      } catch (enqueueErr: any) {
+        logger.error(
+          `Failed to enqueue volume-qualified achievement bonuses for ${user.username}: ${enqueueErr.message}`,
+        );
+      }
     }
 
     // Rank stays off-chain; purchase/upgrade txs carry a company-wallet signature
     // over the current upline ranks so the contract can enforce commission gates.
-    return newRank;
+    return user.rank;
   }
 
   /**
@@ -472,15 +512,16 @@ export class NetworkService {
   }
 
   /**
-   * Applies any pending AdminUserOverride onto the User document and enqueues
-   * rank bonuses if the override raised rank. Fixes profiles that were only
-   * patched in the override collection before write-through existed.
+   * Applies any pending AdminUserOverride onto the User document.
+   * Does NOT enqueue achievement bonuses — forced ranks are display-only until
+   * volume qualifies (see evaluateRank).
    */
   static async syncAdminOverrides(user: {
     username: string;
     walletAddress: string;
     rank: string;
     tier: string;
+    isForcedRank?: boolean;
     save: () => Promise<unknown>;
   }): Promise<{ rank: string; tier: string }> {
     const override = await AdminUserOverride.findOne({
@@ -498,6 +539,7 @@ export class NetworkService {
 
     if (override.rankOverride && override.rankOverride !== user.rank) {
       (user as { rank: string }).rank = override.rankOverride;
+      (user as { isForcedRank: boolean }).isForcedRank = true;
       changed = true;
     }
     if (override.tierOverride && override.tierOverride !== user.tier) {
@@ -507,18 +549,8 @@ export class NetworkService {
 
     if (changed) {
       await user.save();
-      if (nextRank !== previousRank) {
-        try {
-          const { RewardsService } = await import('./rewards.service');
-          await RewardsService.enqueueAchievementBonuses(user, previousRank, nextRank);
-        } catch (err: any) {
-          logger.error(
-            `Failed to enqueue achievement bonuses while syncing overrides for ${user.username}: ${err.message}`,
-          );
-        }
-      }
       logger.info(
-        `Synced admin overrides onto ${user.username}: rank ${previousRank} -> ${nextRank}, tier -> ${nextTier}`,
+        `Synced admin overrides onto ${user.username}: rank ${previousRank} -> ${nextRank}, tier -> ${nextTier} (no achievement bonuses)`,
       );
     }
 

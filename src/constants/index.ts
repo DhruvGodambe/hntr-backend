@@ -140,3 +140,9 @@ export function ranksNewlyAchieved(
   if (nextIdx <= prevIdx) return [];
   return RANK_LADDER.slice(prevIdx + 1, nextIdx + 1);
 }
+
+/** Ladder index for comparisons (-1 for None / unknown). */
+export function getRankLadderIndex(rank: string | null | undefined): number {
+  if (!rank || rank === Rank.NONE) return -1;
+  return RANK_LADDER.indexOf(rank as Rank);
+}

@@ -14,6 +14,12 @@ export interface IUser extends Document {
   directDownline: string[];
   tier: 'None' | 'Bronze' | 'Silver' | 'Gold' | 'Platinum' | 'Diamond';
   rank: 'None' | 'Scout' | 'Tracker' | 'Ranger' | 'Hunter' | 'Elite Hunter' | 'Master Hunter' | 'Legend Hunter';
+  /**
+   * True when an admin forced this user's display rank above (or onto) a rank
+   * they have not yet earned by volume. Achievement bonuses for the forced rank
+   * and intermediates stay withheld until volume qualifies.
+   */
+  isForcedRank: boolean;
   teamVolume: number;
   legVolumes: Map<string, number>;
   hntrPoints: number;
@@ -70,6 +76,11 @@ const UserSchema: Schema = new Schema({
     type: String,
     enum: ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Elite Hunter', 'Master Hunter', 'Legend Hunter'],
     default: 'None',
+  },
+  isForcedRank: {
+    type: Boolean,
+    default: false,
+    index: true,
   },
   teamVolume: {
     type: Number,
