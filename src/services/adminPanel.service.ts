@@ -621,7 +621,10 @@ export class AdminPanelService {
     };
 
     const walletAddress = ethers.getAddress(String(await addressMap[walletKey as (typeof validKeys)[number]]()));
-    const fromBlock = Math.max(0, ENV.CONTRACT_DEPLOY_BLOCK || 0);
+    // Do NOT use CONTRACT_DEPLOY_BLOCK here — that tracks the latest membership
+    // redeploy. Protocol wallets persist across cutovers, so their ERC20 Transfer
+    // history must include prior-contract inflows/outflows.
+    const fromBlock = Math.max(0, ENV.LEDGER_FROM_BLOCK || 0);
     const [usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
       hntrContract.usdt(),
       hntrContract.usdc(),

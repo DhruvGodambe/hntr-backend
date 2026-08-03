@@ -23,6 +23,11 @@ export const ENV = {
   ETHERSCAN_API_KEY: process.env.ETHERSCAN_API_KEY || '',
   ETHERSCAN_CHAIN_ID: Number(process.env.ETHERSCAN_CHAIN_ID || 11155111), // Sepolia
   CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 0),
+  // Protocol wallets (treasury/leadership/…) keep the same address across membership
+  // redeploys. Admin wallet ledgers scan ERC20 Transfer history from this block
+  // (defaults to 0) so prior-contract inflows are not truncated when CONTRACT_DEPLOY_BLOCK
+  // is bumped to the latest membership deploy.
+  LEDGER_FROM_BLOCK: Number(process.env.LEDGER_FROM_BLOCK || 0),
   // Private key that controls `leadershipWallet` on-chain - the only wallet that can
   // pay out the monthly leadership pool, since it holds that pool's actual token balance.
   LEADERSHIP_PRIVATE_KEY: process.env.LEADERSHIP_PRIVATE_KEY || '',
