@@ -42,6 +42,8 @@ export const contractABI = [
   'function protocolBalances(address, address) view returns (uint256)',
   'function totalProtocolBalance(address) view returns (uint256)',
   'function totalWithdrawable(address) view returns (uint256)',
+  'function bootstrapClosed() view returns (bool)',
+  'function fundingShortfall(address token) view returns (uint256)',
   'function getUser(address user) view returns (tuple(uint8 tier, uint256 joinedAt))',
   'function getOverdueWallets(address token) view returns (address[])',
 
@@ -54,6 +56,10 @@ export const contractABI = [
   'function authorizeSigner(address signer)',
   'function revokeSigner(address signer)',
   'function rescueToken(address token, address to, uint256 amount)',
+  'function fundBootstrap(address token, uint256 amount)',
+  'function seedMemberships(address[] accounts, uint8[] tiers, uint256[] joinedAts)',
+  'function seedCommissions(address[] accounts, address[] tokens, uint256[] withdrawable, uint256[] locked, uint256[] lastClaimed)',
+  'function sealBootstrap()',
   'function renounceOwnership()',
   'function transferOwnership(address newOwner)',
   'function acceptOwnership()',
@@ -81,6 +87,10 @@ export const contractABI = [
   'event SignerRevoked(address indexed signer)',
   'event ProtocolFundsCredited(address indexed wallet, address indexed token, uint256 amount)',
   'event ProtocolFundsWithdrawn(address indexed wallet, address indexed token, uint256 amount)',
+  'event BootstrapFunded(address indexed token, uint256 amount, uint256 newBalance)',
+  'event MembershipSeeded(address indexed user, uint8 tier, uint256 joinedAt)',
+  'event CommissionSeeded(address indexed user, address indexed token, uint256 withdrawable, uint256 locked, uint256 lastClaimed)',
+  'event BootstrapSealed()',
 
   // --- Errors (SafeERC20) ---
   'error SafeERC20FailedOperation(address token)',
@@ -94,6 +104,12 @@ export const erc20ABI = [
   'function symbol() view returns (string)',
   'function transfer(address to, uint256 amount) returns (bool)',
   'function approve(address spender, uint256 amount) returns (bool)',
+];
+
+/** Sepolia mock USDT/USDC (and Foundry MockERC20) expose an unrestricted mint. */
+export const mintableErc20ABI = [
+  ...erc20ABI,
+  'function mint(address to, uint256 amount)',
 ];
 
 export const provider = new ethers.JsonRpcProvider(RPC_URL);

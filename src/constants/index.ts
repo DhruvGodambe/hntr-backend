@@ -52,7 +52,7 @@ export const COMMISSION_LEVELS = [
   { level: 7, percent: 4, requiredMembership: Tier.GOLD, requiredRank: Rank.RANGER, rankVolume: 50000 },
   { level: 8, percent: 2, requiredMembership: Tier.GOLD, requiredRank: Rank.RANGER, rankVolume: 50000 },
   { level: 9, percent: 2, requiredMembership: Tier.GOLD, requiredRank: Rank.RANGER, rankVolume: 50000 },
-  { level: 10, percent: 2, requiredMembership: Tier.GOLD, requiredRank: Rank.RANGER, rankVolume: 50000 },
+  { level: 10, percent: 2, requiredMembership: Tier.PLATINUM, requiredRank: Rank.HUNTER, rankVolume: 250000 },
   { level: 11, percent: 2, requiredMembership: Tier.PLATINUM, requiredRank: Rank.HUNTER, rankVolume: 250000 },
   { level: 12, percent: 2, requiredMembership: Tier.PLATINUM, requiredRank: Rank.HUNTER, rankVolume: 250000 },
 ] as const;

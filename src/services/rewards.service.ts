@@ -478,8 +478,8 @@ export class RewardsService {
     const tokenPools = await Promise.all(
       (
         [
-          { symbol: 'USDT', address: usdtAddress },
-          { symbol: 'USDC', address: usdcAddress },
+        { symbol: 'USDT', address: usdtAddress },
+        { symbol: 'USDC', address: usdcAddress },
         ] as const
       ).map(async ({ symbol, address }) => {
         const erc20 = getErc20(address);
