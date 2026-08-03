@@ -14,7 +14,78 @@ import {
 } from '../constants';
 import { NotificationService } from './notification.service';
 
+type StablecoinPool = {
+  symbol: 'USDT' | 'USDC';
+  address: string;
+  decimals: number;
+  /** Mutable remaining balance — decremented as payouts allocate funds. */
+  rawBalance: bigint;
+};
+
+type TokenSlice = { pool: StablecoinPool; amountRaw: bigint };
+
 export class RewardsService {
+  /**
+   * Plan `owedRaw` across pools by draining USDT first, then USDC.
+   * Does not mutate balances — caller applies after successful transfers.
+   * Returns null if combined remaining is insufficient.
+   */
+  private static planUsdtFirst(pools: StablecoinPool[], owedRaw: bigint): TokenSlice[] | null {
+    const zero = BigInt(0);
+    if (owedRaw <= zero) return [];
+
+    const ordered = (['USDT', 'USDC'] as const)
+      .map((symbol) => pools.find((p) => p.symbol === symbol))
+      .filter((p): p is StablecoinPool => Boolean(p));
+
+    const available = ordered.reduce((sum, p) => sum + p.rawBalance, zero);
+    if (available < owedRaw) return null;
+
+    const remainingBySymbol: Record<string, bigint> = {};
+    for (const pool of ordered) remainingBySymbol[pool.symbol] = pool.rawBalance;
+
+    let remaining = owedRaw;
+    const slices: TokenSlice[] = [];
+    for (const pool of ordered) {
+      if (remaining <= zero) break;
+      const availableHere = remainingBySymbol[pool.symbol] || zero;
+      if (availableHere <= zero) continue;
+      const take = availableHere < remaining ? availableHere : remaining;
+      if (take <= zero) continue;
+      slices.push({ pool, amountRaw: take });
+      remainingBySymbol[pool.symbol] = availableHere - take;
+      remaining -= take;
+    }
+    return remaining === zero ? slices : null;
+  }
+
+  private static applySlices(slices: TokenSlice[]) {
+    for (const { pool, amountRaw } of slices) {
+      pool.rawBalance -= amountRaw;
+    }
+  }
+
+  private static async loadStablecoinPools(walletAddress: string): Promise<StablecoinPool[]> {
+    const [usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
+      hntrContract.usdt(),
+      hntrContract.usdc(),
+      getContractAmountDecimals(),
+    ]);
+
+    return Promise.all(
+      (
+        [
+          { symbol: 'USDT' as const, address: usdtAddress },
+          { symbol: 'USDC' as const, address: usdcAddress },
+        ] as const
+      ).map(async ({ symbol, address }) => {
+        const erc20 = getErc20(address);
+        const rawBalance = (await erc20.balanceOf(walletAddress)) as bigint;
+        return { symbol, address, decimals: amountDecimals, rawBalance };
+      }),
+    );
+  }
+
   /**
    * Withdraws accrued protocol balance for both USDT and USDC from the contract.
    * Under pull-payment, protocol wallets (leadership, achievement, etc.) must call
@@ -106,8 +177,8 @@ export class RewardsService {
   }
 
   /**
-   * Pays PENDING achievement bonuses oldest-first when achievementWallet holds
-   * at least the full USD amount in USDT or USDC (single-token, no partials).
+   * Pays PENDING achievement bonuses oldest-first.
+   * Funding order: drain USDT first, then USDC (may split one bonus across both when needed).
    */
   static async disbursePendingAchievementBonuses() {
     if (!ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY) {
@@ -116,12 +187,7 @@ export class RewardsService {
       );
     }
 
-    const [usdtAddress, usdcAddress, achievementWallet] = await Promise.all([
-      hntrContract.usdt(),
-      hntrContract.usdc(),
-      hntrContract.achievementWallet(),
-    ]);
-
+    const achievementWallet = await hntrContract.achievementWallet();
     const adminWallet = new ethers.Wallet(ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY, provider);
     if (adminWallet.address.toLowerCase() !== String(achievementWallet).toLowerCase()) {
       throw new Error(
@@ -129,15 +195,8 @@ export class RewardsService {
       );
     }
 
-    type TokenPool = {
-      symbol: string;
-      address: string;
-      decimals: number;
-      rawBalance: bigint;
-      balance: number;
-    };
-
-    const amountDecimals = await getContractAmountDecimals();
+    // Pull any contract-held protocol balance into the wallet before reading ERC20 balances.
+    await this.withdrawProtocolBalances(adminWallet);
 
     const pending = await AchievementBonus.find({ status: 'PENDING' }).sort({ createdAt: 1 });
     if (pending.length === 0) {
@@ -145,81 +204,56 @@ export class RewardsService {
       return [];
     }
 
-    const tokenPools: TokenPool[] = await Promise.all(
-      (
-        [
-          { symbol: 'USDT', address: usdtAddress },
-          { symbol: 'USDC', address: usdcAddress },
-        ] as const
-      ).map(async ({ symbol, address }) => {
-        const erc20 = getErc20(address);
-        const rawBalance = (await erc20.balanceOf(achievementWallet)) as bigint;
-        return {
-          symbol,
-          address,
-          decimals: amountDecimals,
-          rawBalance,
-          balance: Number(ethers.formatUnits(rawBalance, amountDecimals)),
-        };
-      }),
-    );
-
+    const tokenPools = await this.loadStablecoinPools(String(achievementWallet));
     tokenPools.forEach((p) =>
-      console.log(`Live Achievement Wallet Balance: $${p.balance} ${p.symbol}`),
+      console.log(
+        `Live Achievement Wallet Balance: $${ethers.formatUnits(p.rawBalance, p.decimals)} ${p.symbol}`,
+      ),
     );
 
     const paidOut = [];
     const zero = BigInt(0);
 
     for (const bonus of pending) {
-      // Prefer the first token that can cover the full amount (USDT then USDC).
-      let fundingPool: TokenPool | undefined;
-      for (const pool of tokenPools) {
-        if (pool.balance + 1e-9 >= bonus.amountUSD) {
-          fundingPool = pool;
-          break;
-        }
-      }
+      const precision = Math.min(tokenPools[0]?.decimals ?? 6, 8);
+      const amountRaw = ethers.parseUnits(bonus.amountUSD.toFixed(precision), tokenPools[0].decimals);
+      if (amountRaw <= zero) continue;
 
-      if (!fundingPool) {
+      const slices = this.planUsdtFirst(tokenPools, amountRaw);
+      if (!slices || slices.length === 0) {
         console.log(
-          `Skipping ${bonus.username} ${bonus.rank} $${bonus.amountUSD} — achievement wallet underfunded`,
+          `Skipping ${bonus.username} ${bonus.rank} $${bonus.amountUSD} — achievement wallet underfunded (USDT-first)`,
         );
         continue;
       }
 
-      const precision = Math.min(fundingPool.decimals, 8);
-      const amountRaw = ethers.parseUnits(bonus.amountUSD.toFixed(precision), fundingPool.decimals);
-
-      if (amountRaw > fundingPool.rawBalance) {
-        console.log(
-          `Skipping ${bonus.username} ${bonus.rank} — raw balance too low after precision adjust`,
-        );
-        continue;
-      }
+      const transferMeta: { symbol: string; amount: number; txHash: string }[] = [];
 
       try {
         console.log(
-          `Paying achievement bonus $${bonus.amountUSD} ${fundingPool.symbol} to ${bonus.walletAddress} (${bonus.rank})...`,
+          `Paying achievement bonus $${bonus.amountUSD} to ${bonus.walletAddress} (${bonus.rank}) ` +
+            `via ${slices.map((s) => s.pool.symbol).join('→')}...`,
         );
-        const erc20WithSigner = getErc20(fundingPool.address).connect(adminWallet) as ethers.Contract;
-        const tx = await erc20WithSigner.transfer(bonus.walletAddress, amountRaw);
-        console.log(`Transaction sent! Hash: ${tx.hash}`);
-        await tx.wait(1);
 
+        for (const { pool, amountRaw: sliceRaw } of slices) {
+          const amount = Number(ethers.formatUnits(sliceRaw, pool.decimals));
+          const erc20WithSigner = getErc20(pool.address).connect(adminWallet) as ethers.Contract;
+          const tx = await erc20WithSigner.transfer(bonus.walletAddress, sliceRaw);
+          console.log(`  ${pool.symbol} ${amount} tx: ${tx.hash}`);
+          await tx.wait(1);
+          transferMeta.push({ symbol: pool.symbol, amount, txHash: tx.hash });
+        }
+
+        this.applySlices(slices);
+
+        const primary = transferMeta[0];
         bonus.status = 'PAID';
-        bonus.token = fundingPool.symbol;
-        bonus.tokenAddress = fundingPool.address;
-        bonus.txHash = tx.hash;
+        bonus.token = transferMeta.map((t) => t.symbol).join('+');
+        bonus.tokenAddress = slices[0].pool.address;
+        bonus.txHash = primary.txHash;
         bonus.paidAt = new Date();
         await bonus.save();
         paidOut.push(bonus);
-
-        // Keep in-memory balances in sync for subsequent payouts in this run.
-        fundingPool.rawBalance = fundingPool.rawBalance - amountRaw;
-        fundingPool.balance = Number(
-          ethers.formatUnits(fundingPool.rawBalance, fundingPool.decimals),
-        );
 
         await NotificationService.createQuiet({
           walletAddress: bonus.walletAddress,
@@ -230,8 +264,9 @@ export class RewardsService {
           meta: {
             rank: bonus.rank,
             amountUSD: bonus.amountUSD,
-            txHash: tx.hash,
-            token: fundingPool.symbol,
+            txHash: primary.txHash,
+            token: bonus.token,
+            transfers: transferMeta,
           },
         });
 
@@ -241,8 +276,12 @@ export class RewardsService {
           `Failed to pay achievement bonus to ${bonus.walletAddress}:`,
           e.message,
         );
-        // Keep PENDING so the next cron/manual run retries (e.g. RPC blips, gas).
-        // Only mark FAILED when we intentionally want to stop retries.
+        // Keep PENDING. Reload live balances after a partial on-chain transfer.
+        const refreshed = await this.loadStablecoinPools(String(achievementWallet));
+        for (const pool of tokenPools) {
+          const live = refreshed.find((r) => r.symbol === pool.symbol);
+          if (live) pool.rawBalance = live.rawBalance;
+        }
       }
     }
 
@@ -347,7 +386,7 @@ export class RewardsService {
         (waitingOnFundingUSD > 0
           ? `; $${waitingOnFundingUSD.toFixed(2)} waits until the achievement wallet is topped up.`
           : '.') +
-        ` Paid oldest-first in full (no partials) by the daily cron.`;
+        ` Paid oldest-first; funding drains USDT first, then USDC.`;
     } else if (hasPaid) {
       message = `$${lifetimePaidUSD.toFixed(2)} lifetime rank bonuses auto-deposited to your wallet.`;
     } else {
@@ -437,21 +476,14 @@ export class RewardsService {
   }
 
   /**
-   * Calculates the monthly leadership pool distribution based on live on-chain balances,
-   * and pays each eligible user's share directly to their wallet (a real ERC20
-   * `transfer`, not a claimable contract balance - leadership bonus is auto-deposited,
-   * no "claim" step needed).
+   * Monthly leadership pool distribution.
    *
-   * Share weights come from LEADERSHIP_SHARES (Hunter=1, Elite=3, Master=7, Legend=15).
-   * Amounts are computed with BigInt against the raw token balance so dust stays in the
-   * pool wallet rather than over-drawing.
+   * Each eligible user's USD entitlement is `totalPool * shares / totalShares`.
+   * Entitlements are funded by draining USDT first, then USDC (may split one
+   * user's payout across both tokens). Integer dust stays in the wallet.
    */
   static async calculateMonthlyLeadershipPool() {
-    const [usdtAddress, usdcAddress, leadershipWallet] = await Promise.all([
-      hntrContract.usdt(),
-      hntrContract.usdc(),
-      hntrContract.leadershipWallet(),
-    ]);
+    const leadershipWallet = await hntrContract.leadershipWallet();
 
     if (!ENV.LEADERSHIP_PRIVATE_KEY) {
       throw new Error('LEADERSHIP_PRIVATE_KEY not found in environment for automated payouts!');
@@ -464,6 +496,9 @@ export class RewardsService {
       );
     }
 
+    // Pull any contract-held protocol balance into the wallet before reading ERC20 balances.
+    await this.withdrawProtocolBalances(adminWallet);
+
     const eligibleUsers = await User.find({
       rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
     });
@@ -473,34 +508,16 @@ export class RewardsService {
       return [];
     }
 
-    const amountDecimals = await getContractAmountDecimals();
-
-    const tokenPools = await Promise.all(
-      (
-        [
-        { symbol: 'USDT', address: usdtAddress },
-        { symbol: 'USDC', address: usdcAddress },
-        ] as const
-      ).map(async ({ symbol, address }) => {
-        const erc20 = getErc20(address);
-        const rawBalance = (await erc20.balanceOf(leadershipWallet)) as bigint;
-        return {
-          symbol,
-          address,
-          decimals: amountDecimals,
-          rawBalance,
-          balance: Number(ethers.formatUnits(rawBalance, amountDecimals)),
-        };
-      }),
-    );
-
+    const tokenPools = await this.loadStablecoinPools(String(leadershipWallet));
     tokenPools.forEach((p) =>
-      console.log(`Live Leadership Pool Balance: $${p.balance} ${p.symbol} (raw ${p.rawBalance})`),
+      console.log(
+        `Live Leadership Pool Balance: $${ethers.formatUnits(p.rawBalance, p.decimals)} ${p.symbol} (raw ${p.rawBalance})`,
+      ),
     );
 
     const zero = BigInt(0);
-    const poolEmpty = tokenPools.every((p) => p.rawBalance === zero);
-    if (poolEmpty) {
+    const totalRaw = tokenPools.reduce((sum, p) => sum + p.rawBalance, zero);
+    if (totalRaw === zero) {
       console.log('Leadership pool is empty — nothing to distribute this month.');
       return [];
     }
@@ -529,6 +546,8 @@ export class RewardsService {
 
     const currentMonth = new Date().toISOString().slice(0, 7);
     const payoutsSaved = [];
+    const decimals = tokenPools[0].decimals;
+    let remainingShares = totalShares;
 
     for (const userShare of userShares) {
       if (userShare.shares <= 0) continue;
@@ -536,30 +555,51 @@ export class RewardsService {
       const existing = await Payout.findOne({ username: userShare.username, month: currentMonth });
       if (existing) {
         console.log(`Skipping ${userShare.username} — already paid for ${currentMonth}`);
+        // Already-paid users still consume their share weight from the remaining
+        // denominator so unpaid peers keep a fair claim on what's left.
+        remainingShares -= userShare.shares;
+        continue;
+      }
+
+      if (remainingShares <= 0) break;
+
+      const remainingRaw = tokenPools.reduce((sum, p) => sum + p.rawBalance, zero);
+      if (remainingRaw <= zero) {
+        console.log('Leadership pool depleted mid-run — stopping.');
+        break;
+      }
+
+      // Pro-rata of whatever is still left; last unpaid user absorbs integer dust.
+      const owedRaw = (remainingRaw * BigInt(userShare.shares)) / BigInt(remainingShares);
+      if (owedRaw <= zero) {
+        remainingShares -= userShare.shares;
+        continue;
+      }
+
+      const slices = this.planUsdtFirst(tokenPools, owedRaw);
+      if (!slices || slices.length === 0) {
+        console.log(
+          `Skipping ${userShare.username} — insufficient remaining pool for owed ${ethers.formatUnits(owedRaw, decimals)}`,
+        );
+        remainingShares -= userShare.shares;
         continue;
       }
 
       const breakdown: IPayoutBreakdownEntry[] = [];
       let totalUSD = 0;
 
-      for (const pool of tokenPools) {
-        if (pool.rawBalance <= zero) continue;
+      try {
+        console.log(
+          `Paying ${userShare.username} $${ethers.formatUnits(owedRaw, decimals)} ` +
+            `via ${slices.map((s) => s.pool.symbol).join('→')}...`,
+        );
 
-        // Integer pro-rata: amount = rawBalance * userShares / totalShares
-        const amountRaw = (pool.rawBalance * BigInt(userShare.shares)) / BigInt(totalShares);
-        if (amountRaw <= zero) continue;
-
-        const amount = Number(ethers.formatUnits(amountRaw, pool.decimals));
-
-        try {
-          console.log(
-            `Executing live transfer of ${amount} ${pool.symbol} (${amountRaw} raw) to ${userShare.walletAddress}...`,
-          );
+        for (const { pool, amountRaw } of slices) {
+          const amount = Number(ethers.formatUnits(amountRaw, pool.decimals));
           const erc20WithSigner = getErc20(pool.address).connect(adminWallet) as ethers.Contract;
           const tx = await erc20WithSigner.transfer(userShare.walletAddress, amountRaw);
-          console.log(`Transaction sent! Hash: ${tx.hash}`);
+          console.log(`  ${pool.symbol} ${amount} tx: ${tx.hash}`);
           await tx.wait(1);
-          console.log(`Transaction confirmed for ${userShare.username} (${pool.symbol}).`);
 
           breakdown.push({
             symbol: pool.symbol,
@@ -569,16 +609,30 @@ export class RewardsService {
             status: 'PAID',
           });
           totalUSD += amount;
-        } catch (e: any) {
-          console.error(`Failed to transfer ${pool.symbol} to ${userShare.walletAddress}:`, e.message);
+        }
+
+        this.applySlices(slices);
+      } catch (e: any) {
+        console.error(`Failed leadership payout to ${userShare.walletAddress}:`, e.message);
+        const paidSymbols = new Set(breakdown.map((b) => b.symbol));
+        for (const { pool, amountRaw } of slices) {
+          if (paidSymbols.has(pool.symbol)) continue;
           breakdown.push({
             symbol: pool.symbol,
             tokenAddress: pool.address,
-            amount,
+            amount: Number(ethers.formatUnits(amountRaw, pool.decimals)),
             status: 'FAILED',
           });
         }
+
+        const refreshed = await this.loadStablecoinPools(String(leadershipWallet));
+        for (const pool of tokenPools) {
+          const live = refreshed.find((r) => r.symbol === pool.symbol);
+          if (live) pool.rawBalance = live.rawBalance;
+        }
       }
+
+      remainingShares -= userShare.shares;
 
       if (breakdown.length === 0) continue;
 
@@ -609,6 +663,7 @@ export class RewardsService {
             amountUSDC: totalUSD,
             txHash: paidEntry.txHash,
             rank: userShare.rank,
+            transfers: breakdown,
           },
         });
       }
