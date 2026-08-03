@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import User, { IUser } from '../models/User';
 import AdminUserOverride from '../models/AdminUserOverride';
+import Transaction from '../models/Transaction';
 import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank, getRankLadderIndex } from '../constants';
 import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
@@ -626,33 +627,78 @@ export class NetworkService {
   }
 
   /**
-   * Sums every historical CommissionEarned log for this wallet directly from the
-   * chain (liquid + locked), independent of whether it has since been withdrawn.
-   * Fetched via Etherscan (see etherscan.service.ts) from the contract's deploy
-   * block onward, rather than raw `eth_getLogs`, so this is a true lifetime total
-   * instead of being limited to whatever recent window the public RPC allows.
+   * Lifetime commissions earned (liquid + locked), whether later withdrawn or not.
+   *
+   * Prefer Mongo COMMISSION_EARNED rows — those survive membership contract redeploys
+   * and bootstrap (seedCommissions does not emit CommissionEarned). Also include any
+   * current-contract chain events not yet written by the listener to avoid a brief
+   * undercount after a new earn.
    */
-  private static async getLifetimeCommissionsEarned(address: string, tokenAddresses: string[], amountDecimals: number): Promise<number> {
+  private static async getLifetimeCommissionsEarned(address: string, _tokenAddresses: string[], amountDecimals: number): Promise<number> {
+    const normalized = address.toLowerCase();
+
     try {
-      const iface = new ethers.Interface(contractABI);
-      const topic = ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)');
-      const paddedAddress = ethers.zeroPadValue(address, 32);
+      const [agg] = await Transaction.aggregate<{ total: number }>([
+        {
+          $match: {
+            walletAddress: normalized,
+            type: 'COMMISSION_EARNED',
+            status: 'CONFIRMED',
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]);
+      let total = Number(agg?.total || 0);
 
-      const logs = await getLogsViaEtherscan({
-        address: CONTRACT_ADDRESS,
-        topics: [topic, paddedAddress],
-        fromBlock: ENV.CONTRACT_DEPLOY_BLOCK,
-      });
+      // Supplement with current-contract logs not yet mirrored into Mongo.
+      try {
+        const iface = new ethers.Interface(contractABI);
+        const topic = ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)');
+        const paddedAddress = ethers.zeroPadValue(normalized, 32);
+        const logs = await getLogsViaEtherscan({
+          address: CONTRACT_ADDRESS,
+          topics: [topic, paddedAddress],
+          fromBlock: ENV.CONTRACT_DEPLOY_BLOCK,
+        });
 
-      let total = 0;
-      for (const log of logs) {
-        const parsed = iface.parseLog({ topics: log.topics, data: log.data });
-        if (!parsed) continue;
-        const [, liquidAmount, lockedAmount] = parsed.args;
-        total += Number(ethers.formatUnits(BigInt(liquidAmount) + BigInt(lockedAmount), amountDecimals));
+        if (logs.length > 0) {
+          const existing = await Transaction.find({
+            walletAddress: normalized,
+            type: 'COMMISSION_EARNED',
+            status: 'CONFIRMED',
+            txHash: { $in: logs.map((l) => String(l.transactionHash || '').toLowerCase()) },
+          })
+            .select('txHash token level')
+            .lean();
+
+          const seen = new Set(
+            existing.map(
+              (row) =>
+                `${String(row.txHash || '').toLowerCase()}:${String(row.token || '').toLowerCase()}:${Number(row.level)}`,
+            ),
+          );
+
+          for (const log of logs) {
+            const parsed = iface.parseLog({ topics: log.topics, data: log.data });
+            if (!parsed) continue;
+            const [, liquidAmount, lockedAmount, level, token] = parsed.args;
+            const key = `${String(log.transactionHash || '').toLowerCase()}:${String(token).toLowerCase()}:${Number(level)}`;
+            if (seen.has(key)) continue;
+
+            total += Number(
+              ethers.formatUnits(BigInt(liquidAmount) + BigInt(lockedAmount), amountDecimals),
+            );
+          }
+        }
+      } catch (chainErr: any) {
+        logger.warn(
+          `Lifetime commissions chain supplement failed for ${normalized}: ${chainErr?.message || chainErr}`,
+        );
       }
+
       return total;
-    } catch {
+    } catch (err: any) {
+      logger.warn(`Lifetime commissions lookup failed for ${normalized}: ${err?.message || err}`);
       return 0;
     }
   }
