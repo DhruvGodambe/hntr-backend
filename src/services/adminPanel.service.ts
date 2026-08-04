@@ -27,7 +27,6 @@ export class AdminPanelError extends Error {
   }
 }
 
-const VALID_TIERS = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'] as const;
 const VALID_RANKS = [
   'None',
   'Scout',
@@ -368,7 +367,9 @@ export class AdminPanelService {
     let items = users.map((u, idx) => {
       const override = overrideByUser.get(u.username.toLowerCase());
       const isBlocked = override?.isBlocked ?? false;
-      const tier = override?.tierOverride || u.tier;
+      // Membership is on-chain + listener only — never surface admin tier overrides.
+      const tier = u.tier;
+      // Rank may be force-upgraded by admin.
       const rank = override?.rankOverride || u.rank;
 
       return {
@@ -386,7 +387,7 @@ export class AdminPanelService {
         joinedAt: u.joinedAt,
         actualTier: u.tier,
         actualRank: u.rank,
-        tierOverride: override?.tierOverride ?? null,
+        tierOverride: null,
         rankOverride: override?.rankOverride ?? null,
       };
     });
@@ -417,84 +418,116 @@ export class AdminPanelService {
     };
   }
 
+  /**
+   * Admin may only force-upgrade network rank (not membership tier).
+   * Membership is purchased/upgraded on-chain only; admin cannot change it.
+   */
   static async overrideUserProfile(username: string, tier?: string, rank?: string) {
     const user = await User.findOne({ username });
     if (!user) throw new AdminPanelError('USER_NOT_FOUND', 'User not found.', 404);
 
-    if (tier && !VALID_TIERS.includes(tier as (typeof VALID_TIERS)[number])) {
-      throw new AdminPanelError('INVALID_TIER', `Invalid tier. Allowed: ${VALID_TIERS.join(', ')}`);
+    if (tier !== undefined && tier !== null && String(tier).length > 0) {
+      throw new AdminPanelError(
+        'MEMBERSHIP_IMMUTABLE',
+        'Membership tier cannot be changed from admin. Users purchase or upgrade on-chain only.',
+        400,
+      );
     }
-    if (rank && !VALID_RANKS.includes(rank as (typeof VALID_RANKS)[number])) {
+
+    if (rank === undefined || rank === null || String(rank).length === 0) {
+      throw new AdminPanelError('RANK_REQUIRED', 'Rank is required for profile override.', 400);
+    }
+
+    if (!VALID_RANKS.includes(rank as (typeof VALID_RANKS)[number])) {
       throw new AdminPanelError('INVALID_RANK', `Invalid rank. Allowed: ${VALID_RANKS.join(', ')}`);
     }
 
     const previousRank = user.rank;
     const previousTier = user.tier;
-    const nextTier = tier !== undefined ? tier : user.tier;
-    const nextRank = rank !== undefined ? rank : user.rank;
+    const nextRank = rank;
 
-    const isForced = Boolean(user.isForcedRank);
-    if (rank !== undefined && isForced) {
-      const prevIdx = getRankLadderIndex(previousRank);
-      const nextIdx = getRankLadderIndex(nextRank);
-      if (nextIdx < prevIdx) {
-        throw new AdminPanelError(
-          'FORCED_RANK_DOWNGRADE',
-          `Cannot rank down a forced-rank user (${previousRank} → ${nextRank}). Raise their rank or wait until volume qualifies.`,
-          400,
+    const prevIdx = getRankLadderIndex(previousRank);
+    const nextIdx = getRankLadderIndex(nextRank);
+    if (nextIdx < prevIdx) {
+      throw new AdminPanelError(
+        'RANK_DOWNGRADE',
+        `Cannot rank down (${previousRank} → ${nextRank}). Admin may only upgrade rank.`,
+        400,
+      );
+    }
+    if (nextIdx === prevIdx) {
+      return {
+        username: user.username,
+        tier: user.tier,
+        rank: user.rank,
+        isForcedRank: Boolean(user.isForcedRank),
+        previousRank,
+        previousTier,
+        tierOverride: null,
+        rankOverride: (await AdminUserOverride.findOne({ username: username.toLowerCase() }).lean())
+          ?.rankOverride ?? null,
+        message: 'Rank unchanged.',
+      };
+    }
+
+    // Rank only — never touch membership via admin. Re-sync tier from chain so a past
+    // admin tier override cannot leave Mongo/admin UI out of date with on-chain membership.
+    user.rank = nextRank as typeof user.rank;
+    user.isForcedRank = true;
+    if (user.walletAddress) {
+      try {
+        const onChainUser = await hntrContract.getUser(user.walletAddress);
+        const tierNames = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'] as const;
+        const onChainTier = tierNames[Number(onChainUser[0])] || 'None';
+        if (user.tier !== onChainTier) {
+          logger.info(
+            `Repairing ${username} membership from Mongo ${user.tier} → on-chain ${onChainTier}`,
+          );
+          user.tier = onChainTier as typeof user.tier;
+        }
+      } catch (err: unknown) {
+        logger.warn(
+          `Could not re-sync on-chain tier for ${username}: ${err instanceof Error ? err.message : err}`,
         );
       }
     }
-
-    // Write through to User — network/rewards APIs read User.rank / User.tier directly.
-    user.tier = nextTier as typeof user.tier;
-    user.rank = nextRank as typeof user.rank;
-
-    // Any admin-assigned rank change (or reinforcing a higher forced rank) marks the user forced.
-    // Achievement bonuses are NOT enqueued here — they pay when evaluateRank sees volume qualify.
-    if (rank !== undefined && nextRank !== previousRank) {
-      user.isForcedRank = true;
-    }
-
     await user.save();
 
     const override = await AdminUserOverride.findOneAndUpdate(
       { username: username.toLowerCase() },
       {
         $set: {
-          tierOverride: nextTier !== previousTier ? nextTier : null,
-          rankOverride: nextRank !== previousRank || user.isForcedRank ? nextRank : null,
+          rankOverride: nextRank,
+          tierOverride: null,
         },
       },
       { upsert: true, new: true },
     );
 
-    if (rank !== undefined && nextRank !== previousRank) {
-      try {
-        const { NotificationService } = await import('./notification.service');
-        const shares = getLeadershipShares(nextRank);
-        await NotificationService.createQuiet({
-          walletAddress: user.walletAddress,
-          type: 'RANK_UP',
-          title: `Rank upgraded to ${nextRank}`,
-          sub:
-            shares > 0
-              ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool. Achievement bonuses unlock as your team volume qualifies.`
-              : `Keep growing — Hunter rank and above unlock leadership pool shares. Achievement bonuses unlock as your team volume qualifies.`,
-          link: 'VIEW NETWORK',
-          meta: {
-            previousRank,
-            newRank: nextRank,
-            shares,
-            source: 'admin_override',
-            isForcedRank: true,
-          },
-        });
-      } catch (err: unknown) {
-        logger.error(
-          `Failed to notify rank override for ${username}: ${err instanceof Error ? err.message : err}`,
-        );
-      }
+    try {
+      const { NotificationService } = await import('./notification.service');
+      const shares = getLeadershipShares(nextRank);
+      await NotificationService.createQuiet({
+        walletAddress: user.walletAddress,
+        type: 'RANK_UP',
+        title: `Rank upgraded to ${nextRank}`,
+        sub:
+          shares > 0
+            ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool. Achievement bonuses unlock as your team volume qualifies.`
+            : `Keep growing — Hunter rank and above unlock leadership pool shares. Achievement bonuses unlock as your team volume qualifies.`,
+        link: 'VIEW NETWORK',
+        meta: {
+          previousRank,
+          newRank: nextRank,
+          shares,
+          source: 'admin_override',
+          isForcedRank: true,
+        },
+      });
+    } catch (err: unknown) {
+      logger.error(
+        `Failed to notify rank override for ${username}: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
     return {
@@ -504,9 +537,9 @@ export class AdminPanelService {
       isForcedRank: Boolean(user.isForcedRank),
       previousRank,
       previousTier,
-      tierOverride: override.tierOverride ?? null,
+      tierOverride: null,
       rankOverride: override.rankOverride ?? null,
-      message: 'User profile updated.',
+      message: `Rank upgraded to ${nextRank}. Membership is unchanged (${user.tier}).`,
     };
   }
 

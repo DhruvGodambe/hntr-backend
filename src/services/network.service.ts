@@ -513,7 +513,8 @@ export class NetworkService {
   }
 
   /**
-   * Applies any pending AdminUserOverride onto the User document.
+   * Applies any pending admin rank override onto the User document.
+   * Membership tier is never overridden (on-chain purchase / upgrade only).
    * Does NOT enqueue achievement bonuses — forced ranks are display-only until
    * volume qualifies (see evaluateRank).
    */
@@ -533,29 +534,37 @@ export class NetworkService {
       return { rank: user.rank || 'None', tier: user.tier || 'None' };
     }
 
+    // Drop stale membership overrides — admin may no longer change tier.
+    if (override.tierOverride) {
+      await AdminUserOverride.updateOne(
+        { username: user.username.toLowerCase() },
+        { $set: { tierOverride: null } },
+      );
+    }
+
     const nextRank = override.rankOverride || user.rank || 'None';
-    const nextTier = override.tierOverride || user.tier || 'None';
     const previousRank = user.rank || 'None';
     let changed = false;
 
     if (override.rankOverride && override.rankOverride !== user.rank) {
-      (user as { rank: string }).rank = override.rankOverride;
-      (user as { isForcedRank: boolean }).isForcedRank = true;
-      changed = true;
-    }
-    if (override.tierOverride && override.tierOverride !== user.tier) {
-      (user as { tier: string }).tier = override.tierOverride;
-      changed = true;
+      const prevIdx = getRankLadderIndex(user.rank);
+      const nextIdx = getRankLadderIndex(override.rankOverride);
+      // Only apply upward (or equal) rank forces — never a downgrade.
+      if (nextIdx >= prevIdx) {
+        (user as { rank: string }).rank = override.rankOverride;
+        (user as { isForcedRank: boolean }).isForcedRank = true;
+        changed = true;
+      }
     }
 
     if (changed) {
       await user.save();
       logger.info(
-        `Synced admin overrides onto ${user.username}: rank ${previousRank} -> ${nextRank}, tier -> ${nextTier} (no achievement bonuses)`,
+        `Synced admin rank override onto ${user.username}: rank ${previousRank} -> ${nextRank} (membership unchanged: ${user.tier})`,
       );
     }
 
-    return { rank: nextRank, tier: nextTier };
+    return { rank: (user.rank as string) || 'None', tier: user.tier || 'None' };
   }
 
   /**
@@ -602,6 +611,24 @@ export class NetworkService {
       ? await this.syncAdminOverrides(user)
       : { rank: 'None', tier: 'None' };
     const rank = synced.rank;
+
+    // Membership is always the on-chain tier (admin cannot override it).
+    // Keep Mongo User.tier aligned so admin list matches the user dashboard.
+    const onChainTier = tierNames[tierIndex] || 'None';
+    if (user && user.tier !== onChainTier) {
+      try {
+        user.tier = onChainTier as typeof user.tier;
+        await user.save();
+        logger.info(
+          `Repaired ${user.username} membership Mongo ${synced.tier} → on-chain ${onChainTier}`,
+        );
+      } catch (err: unknown) {
+        logger.warn(
+          `Failed membership repair for ${address}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
     const teamVolume = user?.teamVolume || 0;
     const progress = this.getRankProgress(rank, teamVolume, user?.legVolumes);
 
@@ -613,7 +640,7 @@ export class NetworkService {
       walletAddress: address,
       username: user?.username || null,
       rank,
-      tier: tierNames[tierIndex] || 'None',
+      tier: onChainTier,
       joinedAt: user?.joinedAt || null,
       teamVolume,
       networkSize: user ? await User.countDocuments({ ancestors: user.username }) : 0,
