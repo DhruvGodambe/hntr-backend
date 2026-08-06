@@ -2,6 +2,7 @@ import { ethers } from 'ethers';
 import User from '../models/User';
 import Transaction from '../models/Transaction';
 import SyncState from '../models/SyncState';
+import AdminUserOverride from '../models/AdminUserOverride';
 import { NetworkService } from './network.service';
 import { PointsService } from './points.service';
 import { provider, CONTRACT_ADDRESS, contractABI, getContractAmountDecimals } from './contract.service';
@@ -82,6 +83,7 @@ export class BlockchainService {
     ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)'),
     ethers.id('CommissionWithdrawn(address,uint256,address)'),
     ethers.id('CompanyWalletWithdrawn(address,address,uint256,address)'),
+    ethers.id('MembershipTierOverriden(address,uint8,uint256)'),
   ];
 
   public async startListening() {
@@ -226,6 +228,12 @@ export class BlockchainService {
         companyWallet,
         txHash,
       );
+    } else if (parsed.name === 'MembershipTierOverriden') {
+      const [user, tierIndex] = parsed.args;
+      logger.info(
+        `MembershipTierOverriden event detected for ${user} tier=${tierIndex} at block ${log.blockNumber}`,
+      );
+      await this.handleMembershipTierOverriden(user, Number(tierIndex), txHash);
     }
   }
 
@@ -460,7 +468,23 @@ export class BlockchainService {
 
     const oldTier = user.tier;
     user.tier = tierStr as any;
+    // Paid upgrade to a higher tier clears free company membership force.
+    // Same-tier rebuy cannot fire MembershipUpgraded.
+    if (type === 'UPGRADE') {
+      user.isForcedMembership = false;
+    }
     await user.save();
+
+    if (type === 'UPGRADE') {
+      try {
+        await AdminUserOverride.findOneAndUpdate(
+          { username: user.username.toLowerCase() },
+          { $set: { tierOverride: null } },
+        );
+      } catch (err: any) {
+        logger.error(`Failed to clear tierOverride for ${user.username}: ${err.message}`);
+      }
+    }
 
     try {
       const results = await NetworkService.recalculateUplineVolumes(user.username);
@@ -496,6 +520,35 @@ export class BlockchainService {
 
     logger.info(
       `Processed ${type} for user ${user.username}: ${oldTier} -> ${tierStr} ($${amountUsd.toFixed(2)}). Ancestors: ${user.ancestors.length}`,
+    );
+  }
+
+  private async handleMembershipTierOverriden(
+    walletAddress: string,
+    tierIndex: number,
+    txHash: string,
+  ) {
+    const tierStr = this.getTierString(tierIndex);
+    const normalizedWallet = walletAddress.toLowerCase();
+    const user = await User.findOne({ walletAddress: normalizedWallet });
+    if (!user) {
+      logger.warn(`MembershipTierOverriden: user not found for ${walletAddress}`);
+      return;
+    }
+
+    const previousTier = user.tier;
+    user.tier = tierStr as any;
+    user.isForcedMembership = true;
+    await user.save();
+
+    await AdminUserOverride.findOneAndUpdate(
+      { username: user.username.toLowerCase() },
+      { $set: { tierOverride: tierStr } },
+      { upsert: true },
+    );
+
+    logger.info(
+      `Forced membership for ${user.username}: ${previousTier} -> ${tierStr} (tx=${txHash})`,
     );
   }
 

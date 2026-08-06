@@ -23,6 +23,11 @@ router.get('/users', AdminPanelController.getUsers);
 router.post('/users/:username/block', AdminPanelController.blockUser);
 router.post('/users/:username/unblock', AdminPanelController.unblockUser);
 router.post('/users/:username/override', AdminPanelController.overrideUser);
+router.post(
+  '/users/:username/record-membership-override',
+  requireAdminPrivileged,
+  AdminPanelController.recordMembershipOverride,
+);
 
 // Transactions & wallets
 router.get('/transactions', AdminPanelController.getTransactions);

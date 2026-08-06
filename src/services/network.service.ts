@@ -513,10 +513,10 @@ export class NetworkService {
   }
 
   /**
-   * Applies any pending admin rank override onto the User document.
-   * Membership tier is never overridden (on-chain purchase / upgrade only).
-   * Does NOT enqueue achievement bonuses — forced ranks are display-only until
-   * volume qualifies (see evaluateRank).
+   * Applies pending admin rank override onto the User document.
+   * Membership tier is on-chain truth (company override updates User.tier + isForcedMembership
+   * via the listener / record endpoint). Stale tierOverride rows are kept for force-flag sync only.
+   * Does NOT enqueue achievement bonuses — forced ranks are display-only until volume qualifies.
    */
   static async syncAdminOverrides(user: {
     username: string;
@@ -524,6 +524,7 @@ export class NetworkService {
     rank: string;
     tier: string;
     isForcedRank?: boolean;
+    isForcedMembership?: boolean;
     save: () => Promise<unknown>;
   }): Promise<{ rank: string; tier: string }> {
     const override = await AdminUserOverride.findOne({
@@ -532,14 +533,6 @@ export class NetworkService {
 
     if (!override) {
       return { rank: user.rank || 'None', tier: user.tier || 'None' };
-    }
-
-    // Drop stale membership overrides — admin may no longer change tier.
-    if (override.tierOverride) {
-      await AdminUserOverride.updateOne(
-        { username: user.username.toLowerCase() },
-        { $set: { tierOverride: null } },
-      );
     }
 
     const nextRank = override.rankOverride || user.rank || 'None';
@@ -557,10 +550,19 @@ export class NetworkService {
       }
     }
 
+    // Keep User.isForcedMembership in sync when tierOverride is still set (company free grant).
+    if (override.tierOverride && !(user as { isForcedMembership?: boolean }).isForcedMembership) {
+      (user as { isForcedMembership: boolean }).isForcedMembership = true;
+      changed = true;
+    }
+
     if (changed) {
       await user.save();
       logger.info(
-        `Synced admin rank override onto ${user.username}: rank ${previousRank} -> ${nextRank} (membership unchanged: ${user.tier})`,
+        `Synced admin overrides onto ${user.username}: rank ${previousRank} -> ${nextRank}` +
+          (override.tierOverride
+            ? `, forcedMembership tier=${override.tierOverride}`
+            : ` (membership tier ${user.tier})`),
       );
     }
 

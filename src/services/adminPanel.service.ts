@@ -8,7 +8,7 @@ import PointsLedger from '../models/PointsLedger';
 import { RewardsService } from './rewards.service';
 import { NetworkService } from './network.service';
 import { CompanyWalletService } from './companyWallet.service';
-import { hntrContract, getErc20, getContractAmountDecimals } from './contract.service';
+import { hntrContract, getErc20, getContractAmountDecimals, provider } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
 import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares, getRankLadderIndex } from '../constants';
@@ -37,6 +37,13 @@ const VALID_RANKS = [
   'Master Hunter',
   'Legend Hunter',
 ] as const;
+
+const VALID_TIERS = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'] as const;
+
+function getTierLadderIndex(tier: string | null | undefined): number {
+  if (!tier || tier === 'None') return -1;
+  return VALID_TIERS.indexOf(tier as (typeof VALID_TIERS)[number]);
+}
 
 const TX_TYPE_MAP: Record<string, string[]> = {
   all: [],
@@ -367,7 +374,7 @@ export class AdminPanelService {
     let items = users.map((u, idx) => {
       const override = overrideByUser.get(u.username.toLowerCase());
       const isBlocked = override?.isBlocked ?? false;
-      // Membership is on-chain + listener only — never surface admin tier overrides.
+      // Membership tier is on-chain truth stored on User; tierOverride tracks free force.
       const tier = u.tier;
       // Rank may be force-upgraded by admin.
       const rank = override?.rankOverride || u.rank;
@@ -384,10 +391,11 @@ export class AdminPanelService {
         status: isBlocked ? 'Blocked' : 'Active',
         isBlocked,
         isForcedRank: Boolean(u.isForcedRank) || Boolean(override?.rankOverride),
+        isForcedMembership: Boolean(u.isForcedMembership) || Boolean(override?.tierOverride),
         joinedAt: u.joinedAt,
         actualTier: u.tier,
         actualRank: u.rank,
-        tierOverride: null,
+        tierOverride: override?.tierOverride ?? null,
         rankOverride: override?.rankOverride ?? null,
       };
     });
@@ -456,29 +464,30 @@ export class AdminPanelService {
       );
     }
     if (nextIdx === prevIdx) {
+      const ov = await AdminUserOverride.findOne({ username: username.toLowerCase() }).lean();
       return {
         username: user.username,
         tier: user.tier,
         rank: user.rank,
         isForcedRank: Boolean(user.isForcedRank),
+        isForcedMembership: Boolean(user.isForcedMembership),
         previousRank,
         previousTier,
-        tierOverride: null,
-        rankOverride: (await AdminUserOverride.findOne({ username: username.toLowerCase() }).lean())
-          ?.rankOverride ?? null,
+        tierOverride: ov?.tierOverride ?? null,
+        rankOverride: ov?.rankOverride ?? null,
         message: 'Rank unchanged.',
       };
     }
 
-    // Rank only — never touch membership via admin. Re-sync tier from chain so a past
-    // admin tier override cannot leave Mongo/admin UI out of date with on-chain membership.
+    // Rank only for this endpoint — membership free force goes through company-wallet
+    // overrideMembershipTier + recordMembershipOverride.
     user.rank = nextRank as typeof user.rank;
     user.isForcedRank = true;
     if (user.walletAddress) {
       try {
         const onChainUser = await hntrContract.getUser(user.walletAddress);
         const tierNames = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'] as const;
-        const onChainTier = tierNames[Number(onChainUser[0])] || 'None';
+        const onChainTier = tierNames[Number(onChainUser[0] ?? onChainUser.tier)] || 'None';
         if (user.tier !== onChainTier) {
           logger.info(
             `Repairing ${username} membership from Mongo ${user.tier} → on-chain ${onChainTier}`,
@@ -493,12 +502,17 @@ export class AdminPanelService {
     }
     await user.save();
 
+    const existingOverride = await AdminUserOverride.findOne({
+      username: username.toLowerCase(),
+    }).lean();
+
     const override = await AdminUserOverride.findOneAndUpdate(
       { username: username.toLowerCase() },
       {
         $set: {
           rankOverride: nextRank,
-          tierOverride: null,
+          // Preserve existing membership force tracking if present.
+          tierOverride: existingOverride?.tierOverride ?? null,
         },
       },
       { upsert: true, new: true },
@@ -535,11 +549,111 @@ export class AdminPanelService {
       tier: user.tier,
       rank: user.rank,
       isForcedRank: Boolean(user.isForcedRank),
+      isForcedMembership: Boolean(user.isForcedMembership),
       previousRank,
       previousTier,
-      tierOverride: null,
+      tierOverride: override.tierOverride ?? null,
       rankOverride: override.rankOverride ?? null,
       message: `Rank upgraded to ${nextRank}. Membership is unchanged (${user.tier}).`,
+    };
+  }
+
+  /**
+   * After company wallet submits overrideMembershipTier on-chain, persist Mongo
+   * tier + forced-membership flags. Does not invent volume or purchase events.
+   */
+  static async recordMembershipOverride(params: {
+    username: string;
+    txHash: string;
+    tier: string;
+  }) {
+    const { username, txHash, tier } = params;
+    if (!txHash || !ethers.isHexString(txHash, 32)) {
+      throw new AdminPanelError('INVALID_TX', 'Valid txHash is required.', 400);
+    }
+    if (!VALID_TIERS.includes(tier as (typeof VALID_TIERS)[number]) || tier === 'None') {
+      throw new AdminPanelError(
+        'INVALID_TIER',
+        `Invalid tier. Allowed: ${VALID_TIERS.filter((t) => t !== 'None').join(', ')}`,
+        400,
+      );
+    }
+
+    const user = await User.findOne({ username });
+    if (!user) throw new AdminPanelError('USER_NOT_FOUND', 'User not found.', 404);
+    if (!user.walletAddress) {
+      throw new AdminPanelError('NO_WALLET', 'User has no wallet address.', 400);
+    }
+
+    const wallet = user.walletAddress.toLowerCase();
+    const previousTier = user.tier;
+    const requestedIdx = getTierLadderIndex(tier);
+
+    const onChainUser = await hntrContract.getUser(wallet);
+    const onChainTierIdx = Number(onChainUser[0] ?? onChainUser.tier);
+    const onChainTier =
+      VALID_TIERS[onChainTierIdx] && onChainTierIdx >= 0 ? VALID_TIERS[onChainTierIdx] : 'None';
+
+    if (getTierLadderIndex(onChainTier) < requestedIdx) {
+      throw new AdminPanelError(
+        'CHAIN_TIER_MISMATCH',
+        `On-chain tier is ${onChainTier}, expected at least ${tier}. Wait for the tx to confirm or check the company wallet call.`,
+        400,
+      );
+    }
+    // Accept equal or higher (if delayed check already advanced).
+    if (getTierLadderIndex(onChainTier) < getTierLadderIndex(previousTier)) {
+      throw new AdminPanelError(
+        'TIER_DOWNGRADE',
+        `On-chain tier ${onChainTier} is below previous membership ${previousTier}.`,
+        400,
+      );
+    }
+
+    try {
+      const receipt = await provider.getTransactionReceipt(txHash);
+      if (receipt) {
+        if (receipt.to && receipt.to.toLowerCase() !== ENV.CONTRACT_ADDRESS.toLowerCase()) {
+          throw new AdminPanelError(
+            'WRONG_CONTRACT',
+            'Transaction was not sent to the membership contract.',
+            400,
+          );
+        }
+      }
+    } catch (err: unknown) {
+      if (err instanceof AdminPanelError) throw err;
+      logger.warn(
+        `Could not fully verify membership override receipt ${txHash}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+
+    user.tier = onChainTier as typeof user.tier;
+    user.isForcedMembership = true;
+    await user.save();
+
+    const override = await AdminUserOverride.findOneAndUpdate(
+      { username: username.toLowerCase() },
+      { $set: { tierOverride: onChainTier } },
+      { upsert: true, new: true },
+    );
+
+    logger.info(
+      `Recorded membership override for ${username}: ${previousTier} -> ${onChainTier} (forced, tx=${txHash})`,
+    );
+
+    return {
+      username: user.username,
+      walletAddress: user.walletAddress,
+      tier: user.tier,
+      rank: user.rank,
+      isForcedMembership: true,
+      isForcedRank: Boolean(user.isForcedRank),
+      previousTier,
+      tierOverride: override.tierOverride ?? onChainTier,
+      rankOverride: override.rankOverride ?? null,
+      txHash: txHash.toLowerCase(),
+      message: `Membership set to ${onChainTier} (company free override).`,
     };
   }
 

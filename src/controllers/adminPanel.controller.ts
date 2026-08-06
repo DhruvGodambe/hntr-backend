@@ -215,6 +215,25 @@ export class AdminPanelController {
     }
   }
 
+  static async recordMembershipOverride(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const username = paramString(req.params.username);
+      const { txHash, tier } = req.body || {};
+      if (!txHash || !tier) {
+        sendError(res, 'txHash and tier are required.', 400);
+        return;
+      }
+      const data = await AdminPanelService.recordMembershipOverride({
+        username,
+        txHash: String(txHash),
+        tier: String(tier),
+      });
+      sendSuccess(res, data, data.message);
+    } catch (error) {
+      handlePanelError(error, res, next);
+    }
+  }
+
   static async getTransactions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { page, limit, skip } = parsePagination(req.query as Record<string, unknown>);

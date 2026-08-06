@@ -11,9 +11,9 @@ export const ENV = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017/hntr',
   RPC_URL: process.env.RPC_URL || process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
-  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0xd0930a746470f8555b18B7afdf118FAd05A71a00',
-  USDT_ADDRESS: process.env.USDT_ADDRESS || '',
-  USDC_ADDRESS: process.env.USDC_ADDRESS || '',
+  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0x96CAc40334EB407B596E44a535674d32f24eB30B',
+  USDT_ADDRESS: process.env.USDT_ADDRESS || '0xff26Bf42e258979e307B581F32A7C984BCEDA66a',
+  USDC_ADDRESS: process.env.USDC_ADDRESS || '0x1A1Bf3C12dc85219D2422dd9B936c5845Be899A1',
   JWT_SECRET: process.env.JWT_SECRET || 'dev-insecure-secret-change-me',
   AUTH_TOKEN_TTL_SECONDS: Number(process.env.AUTH_TOKEN_TTL_SECONDS || 60 * 60 * 24), // 24h
   AUTH_NONCE_TTL_SECONDS: Number(process.env.AUTH_NONCE_TTL_SECONDS || 5 * 60), // 5 min
@@ -22,7 +22,7 @@ export const ENV = {
   // non-trivial block range with "Archive requests require a personal token".
   ETHERSCAN_API_KEY: process.env.ETHERSCAN_API_KEY || '',
   ETHERSCAN_CHAIN_ID: Number(process.env.ETHERSCAN_CHAIN_ID || 11155111), // Sepolia
-  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 0),
+  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11433519),
   // Protocol wallets (treasury/leadership/…) keep the same address across membership
   // redeploys. Admin wallet ledgers scan ERC20 Transfer history from this block
   // (defaults to 0) so prior-contract inflows are not truncated when CONTRACT_DEPLOY_BLOCK

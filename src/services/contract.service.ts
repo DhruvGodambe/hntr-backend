@@ -64,6 +64,8 @@ export const contractABI = [
   'function transferOwnership(address newOwner)',
   'function acceptOwnership()',
 
+  'function overrideMembershipTier(address user, uint8 tier)',
+
   // --- User writes (backend-signed uplines + ranks) ---
   'function purchaseMembership(address user, uint8 tier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature)',
   'function upgradeMembership(address user, uint8 newTier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature)',
@@ -91,6 +93,7 @@ export const contractABI = [
   'event MembershipSeeded(address indexed user, uint8 tier, uint256 joinedAt)',
   'event CommissionSeeded(address indexed user, address indexed token, uint256 withdrawable, uint256 locked, uint256 lastClaimed)',
   'event BootstrapSealed()',
+  'event MembershipTierOverriden(address indexed user, uint8 tier, uint256 joinedAt)',
 
   // --- Errors (SafeERC20) ---
   'error SafeERC20FailedOperation(address token)',

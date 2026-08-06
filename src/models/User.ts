@@ -20,6 +20,12 @@ export interface IUser extends Document {
    * and intermediates stay withheld until volume qualifies.
    */
   isForcedRank: boolean;
+  /**
+   * True when company/admin set membership tier on-chain via free override
+   * (overrideMembershipTier) rather than a paid purchase/upgrade.
+   * Cleared on a subsequent paid MembershipUpgraded.
+   */
+  isForcedMembership: boolean;
   teamVolume: number;
   legVolumes: Map<string, number>;
   hntrPoints: number;
@@ -78,6 +84,11 @@ const UserSchema: Schema = new Schema({
     default: 'None',
   },
   isForcedRank: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  isForcedMembership: {
     type: Boolean,
     default: false,
     index: true,
