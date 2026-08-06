@@ -25,8 +25,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/network', networkRoutes);
 app.use('/api/membership', membershipRoutes);
-app.use('/api/admin', adminRoutes);
+// Panel JWT routes first so they win on shared paths (e.g. GET /company-wallet).
+// Legacy secret-gated routes stay available for automation under the same prefix.
 app.use('/api/admin', adminPanelRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Healthcheck
 app.get('/health', (req, res) => {
