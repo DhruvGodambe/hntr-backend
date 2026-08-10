@@ -689,6 +689,42 @@ export class BlockchainService {
     );
   }
 
+  private resolveStableTokenSymbol(tokenAddress: string): string {
+    const addr = tokenAddress.toLowerCase();
+    if (addr === ENV.USDT_ADDRESS.toLowerCase()) return 'USDT';
+    if (addr === ENV.USDC_ADDRESS.toLowerCase()) return 'USDC';
+    return 'token';
+  }
+
+  private async notifyCommissionClaimed(params: {
+    walletAddress: string;
+    amount: number;
+    tokenAddress: string;
+    txHash: string;
+    source?: 'user' | 'company_wallet';
+    companyWallet?: string;
+  }) {
+    const symbol = this.resolveStableTokenSymbol(params.tokenAddress);
+    const isAdmin = params.source === 'company_wallet';
+    await NotificationService.createQuiet({
+      walletAddress: params.walletAddress,
+      type: 'COMMISSION_CLAIMED',
+      title: isAdmin ? 'Commissions withdrawn (admin)' : 'Referral commission claimed',
+      sub: isAdmin
+        ? `$${params.amount.toFixed(2)} ${symbol} sent to your wallet by the company wallet.`
+        : `$${params.amount.toFixed(2)} ${symbol} sent to your wallet.`,
+      link: 'VIEW TRANSACTION',
+      meta: {
+        amount: params.amount,
+        txHash: params.txHash,
+        token: params.tokenAddress,
+        tokenSymbol: symbol,
+        ...(params.companyWallet ? { companyWallet: params.companyWallet } : {}),
+        ...(params.source ? { source: params.source } : {}),
+      },
+    });
+  }
+
   private async handleCommissionWithdrawn(
     walletAddress: string,
     amount: bigint,
@@ -701,6 +737,9 @@ export class BlockchainService {
     const normalizedToken = String(tokenAddress).toLowerCase();
     const normalizedHash = txHash.toLowerCase();
 
+    // Claim flow: prepare creates PENDING COMMISSION_CLAIM (amount 0), then
+    // /relay/submit attaches txHash while still PENDING. Matching by hash here
+    // used to return without a notification — fix: notify on first confirmation.
     const existingByHash = await Transaction.findOne({
       txHash: normalizedHash,
       walletAddress: normalizedWallet,
@@ -708,14 +747,27 @@ export class BlockchainService {
       token: normalizedToken,
     });
     if (existingByHash) {
-      if (existingByHash.status === 'PENDING' || !existingByHash.amount) {
+      const priorAmount = Number(existingByHash.amount || 0);
+      const needsFinalize =
+        existingByHash.status === 'PENDING' || !Number.isFinite(priorAmount) || priorAmount <= 0;
+      if (needsFinalize) {
         existingByHash.status = 'CONFIRMED';
         existingByHash.amount = withdrawn;
         existingByHash.token = normalizedToken;
         existingByHash.timestamp = new Date();
         await existingByHash.save();
+        await this.notifyCommissionClaimed({
+          walletAddress: normalizedWallet,
+          amount: withdrawn,
+          tokenAddress: normalizedToken,
+          txHash: normalizedHash,
+        });
+        logger.info(
+          `Finalized COMMISSION_CLAIM ${normalizedHash} for ${normalizedWallet}: $${withdrawn.toFixed(2)}`,
+        );
+      } else {
+        logger.info(`Duplicate CommissionWithdrawn tx skipped: ${normalizedHash}`);
       }
-      logger.info(`Duplicate CommissionWithdrawn tx skipped/updated: ${normalizedHash}`);
       return;
     }
 
@@ -735,13 +787,11 @@ export class BlockchainService {
       logger.info(
         `Promoted PENDING COMMISSION_CLAIM to CONFIRMED for ${normalizedHash}: $${withdrawn.toFixed(2)}`,
       );
-      await NotificationService.createQuiet({
+      await this.notifyCommissionClaimed({
         walletAddress: normalizedWallet,
-        type: 'COMMISSION_CLAIMED',
-        title: 'Referral commission claimed',
-        sub: `$${withdrawn.toFixed(2)} sent to your wallet.`,
-        link: 'VIEW TRANSACTION',
-        meta: { amount: withdrawn, txHash: normalizedHash, token: normalizedToken },
+        amount: withdrawn,
+        tokenAddress: normalizedToken,
+        txHash: normalizedHash,
       });
       return;
     }
@@ -764,13 +814,11 @@ export class BlockchainService {
       throw err;
     }
 
-    await NotificationService.createQuiet({
+    await this.notifyCommissionClaimed({
       walletAddress: normalizedWallet,
-      type: 'COMMISSION_CLAIMED',
-      title: 'Referral commission claimed',
-      sub: `$${withdrawn.toFixed(2)} sent to your wallet.`,
-      link: 'VIEW TRANSACTION',
-      meta: { amount: withdrawn, txHash: normalizedHash, token: normalizedToken },
+      amount: withdrawn,
+      tokenAddress: normalizedToken,
+      txHash: normalizedHash,
     });
 
     logger.info(`Stored COMMISSION_WITHDRAWN for ${walletAddress}: -$${withdrawn.toFixed(2)}`);
@@ -818,19 +866,13 @@ export class BlockchainService {
       throw err;
     }
 
-    await NotificationService.createQuiet({
+    await this.notifyCommissionClaimed({
       walletAddress: normalizedWallet,
-      type: 'COMMISSION_CLAIMED',
-      title: 'Commissions withdrawn (admin)',
-      sub: `$${withdrawn.toFixed(2)} sent to your wallet by the company wallet.`,
-      link: 'VIEW TRANSACTION',
-      meta: {
-        amount: withdrawn,
-        txHash: normalizedHash,
-        token: normalizedToken,
-        companyWallet: companyWalletAddress.toLowerCase(),
-        source: 'company_wallet',
-      },
+      amount: withdrawn,
+      tokenAddress: normalizedToken,
+      txHash: normalizedHash,
+      source: 'company_wallet',
+      companyWallet: companyWalletAddress.toLowerCase(),
     });
 
     logger.info(
