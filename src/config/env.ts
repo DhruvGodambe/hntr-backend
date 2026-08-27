@@ -22,6 +22,10 @@ export const ENV = {
   // non-trivial block range with "Archive requests require a personal token".
   ETHERSCAN_API_KEY: process.env.ETHERSCAN_API_KEY || '',
   ETHERSCAN_CHAIN_ID: Number(process.env.ETHERSCAN_CHAIN_ID || 11155111), // Sepolia
+  // Market data proxies. Keys stay on the server; the Next app calls /api/market/*.
+  // CoinGecko Demo keys start with "CG-" (api.coingecko.com). Pro keys use pro-api.coingecko.com.
+  COINGECKO_API_KEY: process.env.COINGECKO_API_KEY || '',
+  OPENSEA_API_KEY: process.env.OPENSEA_API_KEY || '',
   CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11433519),
   // Protocol wallets (treasury/leadership/…) keep the same address across membership
   // redeploys. Admin wallet ledgers scan ERC20 Transfer history from this block

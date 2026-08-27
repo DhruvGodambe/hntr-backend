@@ -3,7 +3,9 @@ import cors from 'cors';
 import { ENV } from './config/env';
 import { connectDB } from './config/db';
 import { logger } from './utils/logger';
+import { installFetchLogger } from './utils/fetchLogger';
 import { errorHandler } from './middlewares/errorHandler';
+import { requestLogger } from './middlewares/requestLogger.middleware';
 
 import userRoutes from './routes/users.routes';
 import networkRoutes from './routes/network.routes';
@@ -11,20 +13,25 @@ import adminRoutes from './routes/admin.routes';
 import adminPanelRoutes from './routes/adminPanel.routes';
 import authRoutes from './routes/auth.routes';
 import membershipRoutes from './routes/membership.routes';
+import marketRoutes from './routes/market.routes';
 import { BlockchainService } from './services/blockchain.service';
 import { initCronJobs } from './jobs/leadership-cron';
+
+installFetchLogger();
 
 const app = express();
 
 // Middlewares
 app.use(cors());
 app.use(express.json());
+app.use(requestLogger);
 
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/network', networkRoutes);
 app.use('/api/membership', membershipRoutes);
+app.use('/api/market', marketRoutes);
 // Panel JWT routes first so they win on shared paths (e.g. GET /company-wallet).
 // Legacy secret-gated routes stay available for automation under the same prefix.
 app.use('/api/admin', adminPanelRoutes);

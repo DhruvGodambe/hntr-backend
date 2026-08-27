@@ -70,3 +70,6 @@ export const adminRegisterRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, max:
 
 /** General admin API rate limit — generous but prevents abuse. */
 export const adminApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefix: 'admin-api' });
+
+/** Public CoinGecko / OpenSea proxies. Homepage fires many OpenSea calls at once. */
+export const marketApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'market-api' });
