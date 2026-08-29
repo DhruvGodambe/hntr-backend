@@ -7,6 +7,7 @@ const router = Router();
 router.use(marketApiRateLimit);
 
 router.get('/coingecko', MarketController.getCoinGecko);
+router.get('/eth-usd', MarketController.getEthUsd);
 router.get('/opensea', MarketController.getOpenSea);
 router.post('/opensea', MarketController.postOpenSea);
 

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { CoinGeckoService } from '../services/coingecko.service';
 import { OpenSeaService } from '../services/opensea.service';
+import { sendSuccess, sendError } from '../utils/response';
 
 function pathFromQuery(req: Request): string | null {
   const path = req.query.path;
@@ -19,6 +20,20 @@ export class MarketController {
 
       const result = await CoinGeckoService.get(path);
       res.status(result.status).json(result.body);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async getEthUsd(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await CoinGeckoService.getEthUsdPrice();
+      if (result.status !== 200) {
+        const body = result.body as { error?: string } | null;
+        sendError(res, body?.error || 'Failed to fetch ETH/USD', result.status);
+        return;
+      }
+      sendSuccess(res, result.body, 'ETH/USD price');
     } catch (error) {
       next(error);
     }

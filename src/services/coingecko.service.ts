@@ -27,6 +27,9 @@ function getApiKey(): string {
   return key;
 }
 
+const ETH_USD_CACHE_MS = 60_000;
+let ethUsdCache: { usd: number; at: number } | null = null;
+
 export class CoinGeckoService {
   static isAllowedPath(path: string): boolean {
     return isAllowedPath(path);
@@ -78,5 +81,24 @@ export class CoinGeckoService {
         body: { error: 'Failed to fetch from CoinGecko', details: message },
       };
     }
+  }
+
+  /** ETH/USD spot from CoinGecko `/coins/markets`, cached for 60s. */
+  static async getEthUsdPrice(): Promise<MarketProxyResult> {
+    if (ethUsdCache && Date.now() - ethUsdCache.at < ETH_USD_CACHE_MS) {
+      return { status: 200, body: { usd: ethUsdCache.usd } };
+    }
+
+    const result = await CoinGeckoService.get('coins/markets?vs_currency=usd&ids=ethereum');
+    if (result.status !== 200) return result;
+
+    const list = Array.isArray(result.body) ? result.body : [];
+    const usd = Number(list[0]?.current_price);
+    if (!Number.isFinite(usd) || usd <= 0) {
+      return { status: 502, body: { error: 'ETH/USD price unavailable' } };
+    }
+
+    ethUsdCache = { usd, at: Date.now() };
+    return { status: 200, body: { usd } };
   }
 }
