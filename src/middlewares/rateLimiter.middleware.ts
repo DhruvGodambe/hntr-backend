@@ -73,3 +73,6 @@ export const adminApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 300, keyP
 
 /** Public CoinGecko / OpenSea proxies. Homepage fires many OpenSea calls at once. */
 export const marketApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'market-api' });
+
+/** Authenticated user/network reads — limits wallet/username enumeration. */
+export const userApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'user-api' });

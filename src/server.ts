@@ -1,73 +1,36 @@
-import express from 'express';
-import cors from 'cors';
 import { ENV } from './config/env';
 import { connectDB } from './config/db';
 import { logger } from './utils/logger';
 import { installFetchLogger } from './utils/fetchLogger';
-import { errorHandler } from './middlewares/errorHandler';
-import { requestLogger } from './middlewares/requestLogger.middleware';
-
-import userRoutes from './routes/users.routes';
-import networkRoutes from './routes/network.routes';
-import adminRoutes from './routes/admin.routes';
-import adminPanelRoutes from './routes/adminPanel.routes';
-import authRoutes from './routes/auth.routes';
-import membershipRoutes from './routes/membership.routes';
-import marketRoutes from './routes/market.routes';
 import { BlockchainService } from './services/blockchain.service';
 import { initCronJobs } from './jobs/leadership-cron';
+import { createApp } from './app';
 
 installFetchLogger();
 
-const app = express();
-
-// Middlewares
-app.use(cors());
-app.use(express.json());
-app.use(requestLogger);
-
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/network', networkRoutes);
-app.use('/api/membership', membershipRoutes);
-app.use('/api/market', marketRoutes);
-// Panel JWT routes first so they win on shared paths (e.g. GET /company-wallet).
-// Legacy secret-gated routes stay available for automation under the same prefix.
-app.use('/api/admin', adminPanelRoutes);
-app.use('/api/admin', adminRoutes);
-
-// Healthcheck
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', environment: ENV.NODE_ENV });
-});
-
-// Global Error Handler
-app.use(errorHandler);
+const app = createApp();
 
 const startServer = async () => {
-    try {
-        if (ENV.NODE_ENV === 'production' && ENV.JWT_SECRET === 'dev-insecure-secret-change-me') {
-            logger.error('JWT_SECRET is using the insecure default value in production. Set a strong JWT_SECRET env var.');
-        }
-
-        await connectDB();
-
-        // Start blockchain listener
-        const blockchainService = new BlockchainService();
-        blockchainService.startListening();
-        logger.info('Blockchain Service Event Listener Started');
-
-        // Start background cron jobs
-        initCronJobs();
-
-        app.listen(ENV.PORT, () => {
-            logger.info(`Server successfully started on port ${ENV.PORT}`);
-        });
-    } catch (error: any) {
-        logger.error('Critical failure during server startup:', error);
-        process.exit(1);
+  try {
+    if (ENV.NODE_ENV === 'production' && ENV.JWT_SECRET === 'dev-insecure-secret-change-me') {
+      logger.error('JWT_SECRET is using the insecure default value in production. Set a strong JWT_SECRET env var.');
     }
+
+    await connectDB();
+
+    const blockchainService = new BlockchainService();
+    blockchainService.startListening();
+    logger.info('Blockchain Service Event Listener Started');
+
+    initCronJobs();
+
+    app.listen(ENV.PORT, () => {
+      logger.info(`Server successfully started on port ${ENV.PORT}`);
+    });
+  } catch (error: any) {
+    logger.error('Critical failure during server startup:', error);
+    process.exit(1);
+  }
 };
 
 startServer();
