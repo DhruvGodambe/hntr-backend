@@ -73,6 +73,8 @@ export interface RewardsSummary {
   claimableNow: number;
   lockedRemaining: number;
   totalRewarded: number;
+  /** Month-over-month commission earnings growth (%), vs prior calendar month (UTC). */
+  monthlyEarningsGrowthPercent: number;
   tokens: TokenBalance[];
 }
 
@@ -608,6 +610,7 @@ export class NetworkService {
     }
 
     const totalRewarded = await this.getLifetimeCommissionsEarned(address, [usdtAddress, usdcAddress], amountDecimals);
+    const monthlyEarningsGrowthPercent = await this.getMonthlyEarningsGrowthPercent(address);
 
     const synced = user
       ? await this.syncAdminOverrides(user)
@@ -651,8 +654,62 @@ export class NetworkService {
       claimableNow: Number(claimableNow.toFixed(2)),
       lockedRemaining: Number(lockedRemaining.toFixed(2)),
       totalRewarded: Number(totalRewarded.toFixed(2)),
+      monthlyEarningsGrowthPercent,
       tokens,
     };
+  }
+
+  private static monthRange(offsetMonths: number) {
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offsetMonths, 1));
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offsetMonths + 1, 1));
+    return { start, end };
+  }
+
+  private static async getCommissionsEarnedInRange(
+    address: string,
+    start: Date,
+    end: Date,
+  ): Promise<number> {
+    const [agg] = await Transaction.aggregate<{ total: number }>([
+      {
+        $match: {
+          walletAddress: address.toLowerCase(),
+          type: 'COMMISSION_EARNED',
+          status: 'CONFIRMED',
+          timestamp: { $gte: start, $lt: end },
+        },
+      },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    return Number(agg?.total || 0);
+  }
+
+  /**
+   * Month-over-month commission earnings growth for the Total Rewarded sub-label.
+   * Compares confirmed COMMISSION_EARNED totals for the current UTC month vs the prior month.
+   */
+  private static async getMonthlyEarningsGrowthPercent(address: string): Promise<number> {
+    try {
+      const thisMonth = this.monthRange(0);
+      const lastMonth = this.monthRange(-1);
+      const [thisMonthEarnings, lastMonthEarnings] = await Promise.all([
+        this.getCommissionsEarnedInRange(address, thisMonth.start, thisMonth.end),
+        this.getCommissionsEarnedInRange(address, lastMonth.start, lastMonth.end),
+      ]);
+
+      if (lastMonthEarnings === 0) {
+        return thisMonthEarnings > 0 ? 100 : 0;
+      }
+
+      const pct = ((thisMonthEarnings - lastMonthEarnings) / lastMonthEarnings) * 100;
+      return Number(pct.toFixed(1));
+    } catch (err: unknown) {
+      logger.warn(
+        `Monthly earnings growth lookup failed for ${address}: ${err instanceof Error ? err.message : err}`,
+      );
+      return 0;
+    }
   }
 
   /**
