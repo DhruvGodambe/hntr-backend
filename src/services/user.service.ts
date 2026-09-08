@@ -1,5 +1,10 @@
 import User, { IUser } from '../models/User';
 import { Tier, Rank } from '../constants';
+import { sanitizeSearch } from '../utils/pagination';
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 export class UserError extends Error {
   code: string;
@@ -90,7 +95,46 @@ export class UserService {
   }
 
   static async getUserByUsername(username: string): Promise<IUser | null> {
-    return User.findOne({ username });
+    const normalized = username.trim().replace(/^@/, '');
+    if (!normalized) return null;
+    // Prefer exact match, then case-insensitive (usernames are stored as registered).
+    return (
+      (await User.findOne({ username: normalized })) ||
+      (await User.findOne({ username: new RegExp(`^${escapeRegex(normalized)}$`, 'i') }))
+    );
+  }
+
+  /**
+   * Lightweight username typeahead for authenticated members (e.g. gift-code share).
+   * Returns only public display fields — never email/phone/wallet.
+   */
+  static async searchUsernames(
+    q: string,
+    opts: { limit?: number; excludeWallet?: string } = {},
+  ): Promise<{ username: string; tier: string }[]> {
+    const safe = sanitizeSearch(q.replace(/^@/, ''), 32);
+    if (safe.length < 1) return [];
+
+    const limit = Math.min(Math.max(opts.limit ?? 8, 1), 20);
+    const filter: Record<string, unknown> = {
+      type: { $ne: 'admin' },
+      walletAddress: { $exists: true, $nin: [null, ''] },
+      username: { $regex: safe, $options: 'i' },
+    };
+    if (opts.excludeWallet) {
+      filter.walletAddress = {
+        $exists: true,
+        $nin: [null, '', opts.excludeWallet.toLowerCase()],
+      };
+    }
+
+    const rows = await User.find(filter)
+      .select({ username: 1, tier: 1, _id: 0 })
+      .sort({ username: 1 })
+      .limit(limit)
+      .lean();
+
+    return rows.map((r) => ({ username: r.username, tier: r.tier || 'None' }));
   }
 
   static async getUserByWallet(walletAddress: string): Promise<IUser | null> {

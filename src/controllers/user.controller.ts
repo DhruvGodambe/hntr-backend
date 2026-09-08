@@ -30,6 +30,20 @@ export class UserController {
     }
   }
 
+  static async searchUsernames(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const q = typeof req.query.q === 'string' ? req.query.q : '';
+      const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : 8;
+      const items = await UserService.searchUsernames(q, {
+        limit: Number.isFinite(limitRaw) ? limitRaw : 8,
+        excludeWallet: req.walletAddress,
+      });
+      sendSuccess(res, { items }, 'Usernames retrieved');
+    } catch (error) {
+      handleUserError(res, error, next);
+    }
+  }
+
   static async getProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { username } = req.params;

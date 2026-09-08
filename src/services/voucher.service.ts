@@ -206,16 +206,27 @@ export class VoucherService {
     if (v.status !== 'ACTIVE') {
       throw new VoucherError('VOUCHER_NOT_ACTIVE', `This voucher is ${v.status.toLowerCase()}.`);
     }
-    const list = [...new Set((usernames || []).map((u) => String(u).trim().toLowerCase()).filter(Boolean))].slice(0, 25);
+    const list = [
+      ...new Set(
+        (usernames || [])
+          .map((u) => String(u).trim().replace(/^@/, ''))
+          .filter(Boolean)
+          .map((u) => u.toLowerCase()),
+      ),
+    ].slice(0, 25);
     const plaintext = code.decrypt(v.codeCipher);
     const url = code.redeemUrl(plaintext);
 
     const notified: string[] = [];
     const skipped: { username: string; reason: string }[] = [];
     for (const uname of list) {
-      const target = await User.findOne({ username: uname });
+      const target = await UserService.getUserByUsername(uname);
       if (!target?.walletAddress) {
         skipped.push({ username: uname, reason: 'unknown user' });
+        continue;
+      }
+      if (target.walletAddress.toLowerCase() === walletAddress.toLowerCase()) {
+        skipped.push({ username: target.username, reason: 'cannot share with yourself' });
         continue;
       }
       await NotificationService.createQuiet({
@@ -226,7 +237,7 @@ export class VoucherService {
         link: 'REDEEM NOW',
         meta: { voucherId, tier: v.tier, redeemUrl: url, from: v.issuerUsername, expiresAt: v.expiresAt },
       });
-      notified.push(uname);
+      notified.push(target.username);
     }
     return { notified, skipped };
   }

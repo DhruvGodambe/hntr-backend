@@ -1,4 +1,4 @@
-import { ENV } from './config/env';
+import { ENV, logVoucherEnvStatus } from './config/env';
 import { connectDB } from './config/db';
 import { logger } from './utils/logger';
 import { installFetchLogger } from './utils/fetchLogger';
@@ -8,6 +8,7 @@ import { initCronJobs } from './jobs/leadership-cron';
 import { createApp } from './app';
 
 installFetchLogger();
+logVoucherEnvStatus();
 
 const app = createApp();
 

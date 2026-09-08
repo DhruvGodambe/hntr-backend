@@ -69,7 +69,7 @@ describe('voucherCode', () => {
   it('builds a redeem URL from APP_BASE_URL', async () => {
     const code = await load();
     const c = code.generateCode();
-    expect(code.redeemUrl(c)).toBe(`https://app.example.com/redeem?code=${encodeURIComponent(c)}`);
+    expect(code.redeemUrl(c)).toBe(`https://app.example.com/membership?code=${encodeURIComponent(c)}`);
   });
 
   it('last4 returns the final group', async () => {

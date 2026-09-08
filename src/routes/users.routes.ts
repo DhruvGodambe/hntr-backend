@@ -16,6 +16,9 @@ router.get(
   UserController.getProfileByWallet,
 );
 
+/** Authenticated username typeahead (gift-code share, etc.). Must be before /:username. */
+router.get('/search', userApiRateLimit, requireWalletAuth, UserController.searchUsernames);
+
 router.get(
   '/:username',
   userApiRateLimit,
