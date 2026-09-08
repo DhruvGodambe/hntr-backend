@@ -8,6 +8,7 @@ declare global {
   namespace Express {
     interface Request {
       isAdminPanel?: boolean;
+      adminUsername?: string;
     }
   }
 }
@@ -27,8 +28,9 @@ export function requireAdminPanelAuth(req: Request, res: Response, next: NextFun
   }
 
   try {
-    AdminAuthService.verifyToken(token);
+    const payload = AdminAuthService.verifyToken(token);
     req.isAdminPanel = true;
+    req.adminUsername = payload.username || 'admin';
     next();
   } catch {
     sendError(res, 'Invalid or expired admin session. Please sign in again.', 401);
@@ -44,6 +46,7 @@ export function requireAdminPrivileged(req: Request, res: Response, next: NextFu
   const secretHeader = req.headers['x-admin-secret'];
   if (ENV.ADMIN_SECRET && secretHeader === ENV.ADMIN_SECRET) {
     req.isAdminPanel = true;
+    req.adminUsername = req.adminUsername || 'admin-secret';
     next();
     return;
   }

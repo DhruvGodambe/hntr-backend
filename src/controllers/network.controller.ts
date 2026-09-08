@@ -16,9 +16,11 @@ import { sendSuccess, sendError } from '../utils/response';
 
 const TIER_NAMES = ['None', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond'];
 
-function mapRewardStatus(status: 'PENDING' | 'PAID' | 'FAILED'): 'PENDING' | 'CONFIRMED' | 'FAILED' {
+function mapRewardStatus(
+  status: 'PENDING' | 'PENDING_REVIEW' | 'PAID' | 'FAILED' | 'REJECTED',
+): 'PENDING' | 'CONFIRMED' | 'FAILED' {
   if (status === 'PAID') return 'CONFIRMED';
-  if (status === 'FAILED') return 'FAILED';
+  if (status === 'FAILED' || status === 'REJECTED') return 'FAILED';
   return 'PENDING';
 }
 

@@ -8,6 +8,8 @@ export type NotificationType =
   | 'LEADERSHIP_PAYOUT'
   | 'ACHIEVEMENT_PAYOUT'
   | 'RANK_UP'
+  | 'VOUCHER_RECEIVED'
+  | 'VOUCHER_REDEEMED'
   | 'GENERAL';
 
 export interface INotification extends Document {
@@ -38,6 +40,8 @@ const NotificationSchema: Schema = new Schema({
       'LEADERSHIP_PAYOUT',
       'ACHIEVEMENT_PAYOUT',
       'RANK_UP',
+      'VOUCHER_RECEIVED',
+      'VOUCHER_REDEEMED',
       'GENERAL',
     ],
     required: true,

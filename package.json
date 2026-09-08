@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "generate:wallets": "tsx src/services/wallet.service.ts",
+    "generate:burner": "tsx src/services/wallet.service.ts burner",
     "test": "vitest run"
   },
   "keywords": [],

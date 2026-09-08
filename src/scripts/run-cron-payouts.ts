@@ -1,5 +1,6 @@
 /**
- * Manually run achievement + leadership payouts and print diagnostics.
+ * Manually run achievement + leadership payouts (admin two-hop path) and print diagnostics.
+ * Auto cron pay is disabled — this CLI is the manual/ops substitute.
  *
  *   npx tsx src/scripts/run-cron-payouts.ts
  */

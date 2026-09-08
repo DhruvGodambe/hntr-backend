@@ -26,6 +26,14 @@ export interface IUser extends Document {
    * Cleared on a subsequent paid MembershipUpgraded.
    */
   isForcedMembership: boolean;
+  /**
+   * True when the current tier came from redeeming a bearer voucher (no payment,
+   * no commissions). Same lifecycle as isForcedMembership — cleared on a
+   * subsequent paid MembershipPurchased/MembershipUpgraded. Used by the
+   * achievement-bonus review gate: a rank qualified while voucher volume is in
+   * the downline is held for manual approval instead of auto-paying.
+   */
+  isVoucherMembership: boolean;
   teamVolume: number;
   legVolumes: Map<string, number>;
   hntrPoints: number;
@@ -89,6 +97,11 @@ const UserSchema: Schema = new Schema({
     index: true,
   },
   isForcedMembership: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  isVoucherMembership: {
     type: Boolean,
     default: false,
     index: true,

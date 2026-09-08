@@ -18,6 +18,10 @@ export interface IPayout extends Document {
   breakdown: IPayoutBreakdownEntry[]; // one entry per token actually transferred (USDT and/or USDC)
   month: string; // Storing as YYYY-MM
   status: 'PENDING' | 'PAID' | 'FAILED';
+  /** DisbursementBatch that funded the burner and dispersed this payout (two-hop). */
+  batchId?: string;
+  /** Hop-1 protocol→burner tx hashes linked to this payout run. */
+  fundTxHashes?: string[];
   createdAt: Date;
 }
 
@@ -70,6 +74,14 @@ const PayoutSchema: Schema = new Schema({
     type: String,
     enum: ['PENDING', 'PAID', 'FAILED'],
     default: 'PENDING',
+  },
+  batchId: {
+    type: String,
+    index: true,
+  },
+  fundTxHashes: {
+    type: [String],
+    default: [],
   },
   createdAt: {
     type: Date,

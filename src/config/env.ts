@@ -11,7 +11,7 @@ export const ENV = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017/hntr',
   RPC_URL: process.env.RPC_URL || process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
-  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0x96CAc40334EB407B596E44a535674d32f24eB30B',
+  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0x0be416578F36e0181C211cBBB703f433ca117595',
   USDT_ADDRESS: process.env.USDT_ADDRESS || '0xff26Bf42e258979e307B581F32A7C984BCEDA66a',
   USDC_ADDRESS: process.env.USDC_ADDRESS || '0x1A1Bf3C12dc85219D2422dd9B936c5845Be899A1',
   JWT_SECRET: process.env.JWT_SECRET || 'dev-insecure-secret-change-me',
@@ -25,8 +25,11 @@ export const ENV = {
   // Market data proxies. Keys stay on the server; the Next app calls /api/market/*.
   // CoinGecko Demo keys start with "CG-" (api.coingecko.com). Pro keys use pro-api.coingecko.com.
   COINGECKO_API_KEY: process.env.COINGECKO_API_KEY || '',
+  // How long successful CoinGecko proxy responses stay fresh in Mongo before a refresh.
+  // Concurrent clients within this window read from DB instead of hitting CoinGecko.
+  COINGECKO_CACHE_TTL_MS: Number(process.env.COINGECKO_CACHE_TTL_MS || 120_000),
   OPENSEA_API_KEY: process.env.OPENSEA_API_KEY || '',
-  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11433519),
+  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11663429),
   // Protocol wallets (treasury/leadership/…) keep the same address across membership
   // redeploys. Admin wallet ledgers scan ERC20 Transfer history from this block
   // (defaults to 0) so prior-contract inflows are not truncated when CONTRACT_DEPLOY_BLOCK
@@ -42,6 +45,24 @@ export const ENV = {
   // - sign purchase/upgrade commission-auth payloads (uplines + ranks)
   // - call `getOverdueWallets()` / `withdrawCompanyWallet()` for overdue users
   COMPANY_WALLET_PRIVATE_KEY: process.env.COMPANY_WALLET_PRIVATE_KEY || '',
+  // Private key that controls `burnerWallet` on-chain - the hot key that submits
+  // voucher redemptions (`redeemVoucher`) so the redeemer never signs a tx or pays
+  // gas. Holds ETH only; must NEVER hold tokens and is deliberately not a commission
+  // signer. Voucher redemption is disabled when this is unset.
+  BURNER_WALLET_PRIVATE_KEY: process.env.BURNER_WALLET_PRIVATE_KEY || '',
+  // Expected burner address, checked against on-chain `burnerWallet()` at startup.
+  BURNER_WALLET: process.env.BURNER_WALLET || '',
+  // Alert threshold (in ETH) for the burner gas balance; the voucher cron warns below this.
+  BURNER_MIN_ETH: Number(process.env.BURNER_MIN_ETH || 0.02),
+  // How long a voucher may sit in REDEEMING before the cron sweeps it back to ACTIVE.
+  VOUCHER_REDEEM_LOCK_TTL_MS: Number(process.env.VOUCHER_REDEEM_LOCK_TTL_MS || 10 * 60 * 1000),
+  // HMAC pepper for the voucher-code lookup hash. Rotating it invalidates every
+  // outstanding code, so treat it as fixed for the life of a deployment.
+  VOUCHER_CODE_PEPPER: process.env.VOUCHER_CODE_PEPPER || '',
+  // AES-256-GCM key (hex or base64, 32 bytes) for encrypting voucher plaintext at rest.
+  VOUCHER_CODE_ENC_KEY: process.env.VOUCHER_CODE_ENC_KEY || '',
+  // Public base URL of the Next.js app, used to build shareable redeem links.
+  APP_BASE_URL: process.env.APP_BASE_URL || 'http://localhost:3000',
   // Shared secret required (via `x-admin-secret` header) to hit protected /api/admin
   // routes that move real funds (e.g. manually triggering the leadership payout run).
   // Left empty by default, which makes those routes always reject.
