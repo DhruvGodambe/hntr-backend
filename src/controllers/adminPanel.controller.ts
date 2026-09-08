@@ -275,13 +275,23 @@ export class AdminPanelController {
     }
   }
 
+  static async getAchievementPreview(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const data = await AdminPanelService.getAchievementPreview();
+      sendSuccess(res, data, 'Achievement bonus preview retrieved successfully');
+    } catch (error) {
+      handlePanelError(error, res, next);
+    }
+  }
+
   static async distributeLeadership(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const data = await AdminPanelService.distributeLeadership();
+      const triggeredBy = req.adminUsername || 'admin';
+      const data = await AdminPanelService.distributeLeadership(triggeredBy);
       sendSuccess(
         res,
         data,
-        `Leadership monthly cron completed (${data.paid} paid, ${data.failed} failed).`,
+        `Leadership distribute completed (${data.paid} paid, ${data.failed} failed).`,
       );
     } catch (error) {
       handlePanelError(error, res, next);
@@ -290,8 +300,19 @@ export class AdminPanelController {
 
   static async distributeAchievement(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const data = await AdminPanelService.distributeAchievement();
+      const triggeredBy = req.adminUsername || 'admin';
+      const data = await AdminPanelService.distributeAchievement(triggeredBy);
       sendSuccess(res, data, `Achievement bonuses disbursed (${data.paid} paid).`);
+    } catch (error) {
+      handlePanelError(error, res, next);
+    }
+  }
+
+  static async listDisbursements(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const limit = Number(req.query.limit) || 20;
+      const data = await AdminPanelService.listRecentDisbursements(limit);
+      sendSuccess(res, data, 'Disbursement batches retrieved successfully');
     } catch (error) {
       handlePanelError(error, res, next);
     }

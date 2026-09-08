@@ -84,6 +84,7 @@ export class BlockchainService {
     ethers.id('CommissionWithdrawn(address,uint256,address)'),
     ethers.id('CompanyWalletWithdrawn(address,address,uint256,address)'),
     ethers.id('MembershipTierOverriden(address,uint8,uint256)'),
+    ethers.id('VoucherRedeemed(address,bytes32,uint8,uint8,uint256)'),
   ];
 
   public async startListening() {
@@ -234,6 +235,12 @@ export class BlockchainService {
         `MembershipTierOverriden event detected for ${user} tier=${tierIndex} at block ${log.blockNumber}`,
       );
       await this.handleMembershipTierOverriden(user, Number(tierIndex), txHash);
+    } else if (parsed.name === 'VoucherRedeemed') {
+      const [user, voucherId, , newTier] = parsed.args;
+      logger.info(
+        `VoucherRedeemed event detected for ${user} tier=${newTier} voucher=${voucherId} at block ${log.blockNumber}`,
+      );
+      await this.handleVoucherRedeemed(user, String(voucherId), Number(newTier), txHash);
     }
   }
 
@@ -468,10 +475,12 @@ export class BlockchainService {
 
     const oldTier = user.tier;
     user.tier = tierStr as any;
-    // Paid upgrade to a higher tier clears free company membership force.
+    // Paid upgrade to a higher tier clears free company membership force and any
+    // voucher grant — the volume is now backed by revenue.
     // Same-tier rebuy cannot fire MembershipUpgraded.
     if (type === 'UPGRADE') {
       user.isForcedMembership = false;
+      user.isVoucherMembership = false;
     }
     await user.save();
 
@@ -520,6 +529,106 @@ export class BlockchainService {
 
     logger.info(
       `Processed ${type} for user ${user.username}: ${oldTier} -> ${tierStr} ($${amountUsd.toFixed(2)}). Ancestors: ${user.ancestors.length}`,
+    );
+  }
+
+  private async handleVoucherRedeemed(
+    walletAddress: string,
+    voucherId: string,
+    tierIndex: number,
+    txHash: string,
+  ) {
+    const { default: Voucher } = await import('../models/Voucher');
+    const tierStr = this.getTierString(tierIndex);
+    const normalizedWallet = walletAddress.toLowerCase();
+    const normalizedHash = txHash.toLowerCase();
+
+    const user = await User.findOne({ walletAddress: normalizedWallet });
+    if (!user) {
+      logger.warn(`VoucherRedeemed: user not found for ${walletAddress} — voucher ${voucherId}`);
+      return;
+    }
+
+    const voucher = await Voucher.findOne({ voucherId });
+    const amountUsd = voucher?.amountUsd ?? TIER_VOLUMES[tierStr as Tier] ?? 0;
+    const previousTier = user.tier;
+
+    // Authoritative state update — same lifecycle as a forced membership, plus a
+    // voucher flag the achievement-bonus review gate keys off.
+    user.tier = tierStr as any;
+    user.isForcedMembership = true;
+    user.isVoucherMembership = true;
+    await user.save();
+
+    try {
+      await AdminUserOverride.findOneAndUpdate(
+        { username: user.username.toLowerCase() },
+        { $set: { tierOverride: tierStr } },
+        { upsert: true },
+      );
+    } catch (err: any) {
+      logger.error(`VoucherRedeemed: failed to set tierOverride for ${user.username}: ${err.message}`);
+    }
+
+    // Promote the optimistic row the redeem endpoint wrote, or create one.
+    const pending = await Transaction.findOne({
+      txHash: normalizedHash,
+      walletAddress: normalizedWallet,
+      type: 'VOUCHER_MEMBERSHIP_REDEEM',
+    });
+    if (pending) {
+      pending.status = 'CONFIRMED';
+      pending.tier = tierStr;
+      pending.amount = amountUsd;
+      pending.timestamp = new Date();
+      await pending.save();
+    } else {
+      try {
+        await Transaction.create({
+          txHash: normalizedHash,
+          walletAddress: normalizedWallet,
+          type: 'VOUCHER_MEMBERSHIP_REDEEM',
+          tier: tierStr,
+          amount: amountUsd,
+          status: 'CONFIRMED',
+          timestamp: new Date(),
+        });
+      } catch (err: any) {
+        if (!isDuplicateKeyError(err)) throw err;
+      }
+    }
+
+    // Reconcile the voucher row (the redeem path usually already did this).
+    if (voucher && voucher.status !== 'REDEEMED') {
+      voucher.status = 'REDEEMED';
+      voucher.redeemerWallet = normalizedWallet;
+      voucher.redeemerUsername = user.username;
+      voucher.redeemedAt = voucher.redeemedAt ?? new Date();
+      voucher.txHash = voucher.txHash ?? normalizedHash;
+      voucher.tierBefore = voucher.tierBefore ?? previousTier;
+      voucher.redeemLockedAt = undefined;
+      await voucher.save();
+    }
+
+    // Recalculate upline volumes immediately (the 10-min cron would also catch it).
+    // No points are awarded — nothing was paid.
+    try {
+      await NetworkService.recalculateUplineVolumes(user.username);
+    } catch (err: any) {
+      logger.error(`VoucherRedeemed: volume recalc failed for ${user.username}: ${err.message}`);
+    }
+
+    await NotificationService.createQuiet({
+      walletAddress: normalizedWallet,
+      type: 'MEMBERSHIP_UPGRADED',
+      title: 'Membership activated',
+      sub: `${tierStr} membership granted via gift code${previousTier && previousTier !== 'None' ? ` (from ${previousTier})` : ''}.`,
+      link: 'VIEW MEMBERSHIP',
+      meta: { tier: tierStr, oldTier: previousTier, txHash: normalizedHash, voucherId, viaVoucher: true },
+    });
+
+    logger.info(
+      `Voucher redeemed for ${user.username}: ${previousTier} -> ${tierStr} (voucher=${voucherId}, tx=${normalizedHash})`,
     );
   }
 

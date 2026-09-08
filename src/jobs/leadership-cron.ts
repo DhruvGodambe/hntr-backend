@@ -7,23 +7,25 @@ import AchievementBonus from '../models/AchievementBonus';
 import Payout from '../models/Payout';
 import User from '../models/User';
 import { LEADERSHIP_ELIGIBLE_RANKS } from '../constants';
+import { initVoucherCron } from './voucher-cron';
 
 const CRON_TZ = { timezone: 'UTC' as const };
 
 /**
- * Same work as the 1st-of-month leadership cron. Safe to call on demand from admin.
+ * Admin-triggered (or manual CLI) leadership payout entrypoint.
+ * Uses two-hop dispersal: protocol wallet → burner → users.
  */
-export async function runMonthlyLeadershipPayout() {
+export async function runMonthlyLeadershipPayout(triggeredBy = 'system') {
   if (mongoose.connection.readyState !== 1) {
     throw new Error('Database not connected. Cannot run leadership payout.');
   }
 
   console.log('\n======================================================');
-  console.log(`⏰ [LEADERSHIP PAYOUT] Starting (manual or cron)...`);
-  console.log(`Date: ${new Date().toISOString()}`);
+  console.log(`⏰ [LEADERSHIP PAYOUT] Starting (admin/manual two-hop)...`);
+  console.log(`Date: ${new Date().toISOString()} triggeredBy=${triggeredBy}`);
   console.log('======================================================');
 
-  const payouts = await RewardsService.calculateMonthlyLeadershipPool();
+  const payouts = await RewardsService.calculateMonthlyLeadershipPool(triggeredBy);
   const paid = payouts.filter((p) => p.status === 'PAID');
   const failed = payouts.filter((p) => p.status === 'FAILED');
 
@@ -44,19 +46,20 @@ export async function runMonthlyLeadershipPayout() {
 }
 
 /**
- * Same work as the daily achievement cron. Safe to call on demand / startup catch-up.
+ * Admin-triggered (or manual CLI) achievement payout entrypoint.
+ * Uses two-hop dispersal: protocol wallet → burner → users.
  */
-export async function runAchievementBonusDisbursement() {
+export async function runAchievementBonusDisbursement(triggeredBy = 'system') {
   if (mongoose.connection.readyState !== 1) {
     throw new Error('Database not connected. Cannot run achievement disbursement.');
   }
 
   console.log('\n======================================================');
-  console.log(`⏰ [ACHIEVEMENT PAYOUT] Starting (manual, cron, or startup)...`);
-  console.log(`Date: ${new Date().toISOString()}`);
+  console.log(`⏰ [ACHIEVEMENT PAYOUT] Starting (admin/manual two-hop)...`);
+  console.log(`Date: ${new Date().toISOString()} triggeredBy=${triggeredBy}`);
   console.log('======================================================');
 
-  const paid = await RewardsService.disbursePendingAchievementBonuses();
+  const paid = await RewardsService.disbursePendingAchievementBonuses(triggeredBy);
   console.log(
     `✅ [ACHIEVEMENT PAYOUT COMPLETE] paid ${paid.length} pending payout(s).`,
   );
@@ -116,49 +119,56 @@ async function backfillLeadershipPayoutIfNeeded() {
 export function initCronJobs() {
   console.log('🕒 Initializing Background Cron Jobs (timezone=UTC)...');
 
-  // Primary monthly leadership pool: 1st of every month at 00:00 UTC.
-  cron.schedule(
-    '0 0 1 * *',
-    async () => {
-      try {
-        await runMonthlyLeadershipPayout();
-      } catch (error) {
-        console.error(`❌ [CRON ERROR] Failed to generate leadership payouts:`, error);
-      }
-    },
-    CRON_TZ,
-  );
+  // Voucher expiry + refund, stale-lock sweep, burner gas alert (every 15 min).
+  initVoucherCron(CRON_TZ);
 
+  // DISABLED: admin-triggered two-hop dispersal replaces auto-pay
+  // Primary monthly leadership pool: 1st of every month at 00:00 UTC.
+  // cron.schedule(
+  //   '0 0 1 * *',
+  //   async () => {
+  //     try {
+  //       await runMonthlyLeadershipPayout();
+  //     } catch (error) {
+  //       console.error(`❌ [CRON ERROR] Failed to generate leadership payouts:`, error);
+  //     }
+  //   },
+  //   CRON_TZ,
+  // );
+
+  // DISABLED: admin-triggered two-hop dispersal replaces auto-pay
   // Leadership backfill: every day at 01:00 UTC. Catches a missed 1st-of-month tick
   // while the process was briefly down / restarted. Already-paid users are skipped.
-  cron.schedule(
-    '0 1 * * *',
-    async () => {
-      try {
-        await backfillLeadershipPayoutIfNeeded();
-      } catch (error) {
-        console.error(`❌ [CRON ERROR] Failed leadership backfill:`, error);
-      }
-    },
-    CRON_TZ,
-  );
+  // cron.schedule(
+  //   '0 1 * * *',
+  //   async () => {
+  //     try {
+  //       await backfillLeadershipPayoutIfNeeded();
+  //     } catch (error) {
+  //       console.error(`❌ [CRON ERROR] Failed leadership backfill:`, error);
+  //     }
+  //   },
+  //   CRON_TZ,
+  // );
 
+  // DISABLED: admin-triggered two-hop dispersal replaces auto-pay
   // Primary daily rank achievement bonuses: 00:30 UTC.
-  cron.schedule(
-    '30 0 * * *',
-    async () => {
-      try {
-        await runAchievementBonusDisbursement();
-      } catch (error) {
-        console.error(`❌ [CRON ERROR] Failed to disburse achievement bonuses:`, error);
-      }
-    },
-    CRON_TZ,
-  );
+  // cron.schedule(
+  //   '30 0 * * *',
+  //   async () => {
+  //     try {
+  //       await runAchievementBonusDisbursement();
+  //     } catch (error) {
+  //       console.error(`❌ [CRON ERROR] Failed to disburse achievement bonuses:`, error);
+  //     }
+  //   },
+  //   CRON_TZ,
+  // );
 
-  // Points + leg-volume reconcile + achievement backfill every 10 minutes.
+  // Points + leg-volume reconcile every 10 minutes.
   // Volume backfill corrects stale legVolumes when the blockchain listener misses
   // an upline recalculation after purchase/upgrade.
+  // Achievement auto-backfill is DISABLED (admin Distribute Rank Bonuses instead).
   cron.schedule(
     '*/10 * * * *',
     async () => {
@@ -185,28 +195,31 @@ export function initCronJobs() {
         console.error(`❌ [CRON ERROR] Failed to reconcile leg volumes:`, error);
       }
 
-      try {
-        await backfillAchievementBonusesIfNeeded();
-      } catch (error) {
-        console.error(`❌ [CRON ERROR] Failed achievement backfill:`, error);
-      }
+      // DISABLED: admin-triggered two-hop dispersal replaces auto-pay
+      // try {
+      //   await backfillAchievementBonusesIfNeeded();
+      // } catch (error) {
+      //   console.error(`❌ [CRON ERROR] Failed achievement backfill:`, error);
+      // }
     },
     CRON_TZ,
   );
 
-  // Immediate catch-up on boot.
+  // Immediate catch-up on boot (volume only — payout catch-up disabled).
   setImmediate(async () => {
-    try {
-      await backfillAchievementBonusesIfNeeded();
-    } catch (error) {
-      console.error(`❌ [STARTUP] Failed achievement catch-up:`, error);
-    }
+    // DISABLED: admin-triggered two-hop dispersal replaces auto-pay
+    // try {
+    //   await backfillAchievementBonusesIfNeeded();
+    // } catch (error) {
+    //   console.error(`❌ [STARTUP] Failed achievement catch-up:`, error);
+    // }
 
-    try {
-      await backfillLeadershipPayoutIfNeeded();
-    } catch (error) {
-      console.error(`❌ [STARTUP] Failed leadership catch-up:`, error);
-    }
+    // DISABLED: admin-triggered two-hop dispersal replaces auto-pay
+    // try {
+    //   await backfillLeadershipPayoutIfNeeded();
+    // } catch (error) {
+    //   console.error(`❌ [STARTUP] Failed leadership catch-up:`, error);
+    // }
 
     try {
       if (mongoose.connection.readyState === 1) {
@@ -220,8 +233,12 @@ export function initCronJobs() {
     }
   });
 
+  // Silence unused-fn warnings while auto-pay schedules stay commented for restore.
+  void backfillAchievementBonusesIfNeeded;
+  void backfillLeadershipPayoutIfNeeded;
+
   console.log(
-    '🕒 Cron jobs scheduled (UTC): leadership 0 0 1 * *, leadership backfill 0 1 * * *, ' +
-      'achievement 30 0 * * *, points+volumes+achievement-backfill */10 * * * *, startup catch-up enabled.',
+    '🕒 Cron jobs scheduled (UTC): points+volumes */10 * * * *, startup volume catch-up. ' +
+      'Leadership/achievement auto-pay DISABLED (admin two-hop distribute only).',
   );
 }

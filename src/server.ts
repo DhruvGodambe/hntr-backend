@@ -3,6 +3,7 @@ import { connectDB } from './config/db';
 import { logger } from './utils/logger';
 import { installFetchLogger } from './utils/fetchLogger';
 import { BlockchainService } from './services/blockchain.service';
+import { verifyBurnerWallet } from './services/contract.service';
 import { initCronJobs } from './jobs/leadership-cron';
 import { createApp } from './app';
 
@@ -21,6 +22,9 @@ const startServer = async () => {
     const blockchainService = new BlockchainService();
     blockchainService.startListening();
     logger.info('Blockchain Service Event Listener Started');
+
+    // Non-fatal: logs loudly if the burner key is missing/mismatched/over-privileged.
+    verifyBurnerWallet().catch((err) => logger.warn(`verifyBurnerWallet: ${err.message}`));
 
     initCronJobs();
 

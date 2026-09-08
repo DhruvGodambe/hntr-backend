@@ -76,3 +76,10 @@ export const marketApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, key
 
 /** Authenticated user/network reads — limits wallet/username enumeration. */
 export const userApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'user-api' });
+
+// Bearer voucher redemption is the brute-force surface. Paired with a persisted
+// per-wallet/per-IP lockout in Mongo (VoucherRedeemAttempt) so a restart or an IP
+// rotation does not reset it.
+export const voucherRedeemRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, keyPrefix: 'voucher-redeem' });
+export const voucherIssueRateLimit = rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix: 'voucher-issue' });
+export const voucherRevealRateLimit = rateLimit({ windowMs: 60 * 1000, max: 30, keyPrefix: 'voucher-reveal' });

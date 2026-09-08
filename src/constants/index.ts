@@ -27,6 +27,29 @@ export const TIER_VOLUMES: Record<Tier, number> = {
   [Tier.DIAMOND]: 2500,
 };
 
+/** On-chain Tier enum index (NONE = 0). Matches HNTRMembership.sol `enum Tier`. */
+export const TIER_INDEX: Record<Tier, number> = {
+  [Tier.NONE]: 0,
+  [Tier.BRONZE]: 1,
+  [Tier.SILVER]: 2,
+  [Tier.GOLD]: 3,
+  [Tier.PLATINUM]: 4,
+  [Tier.DIAMOND]: 5,
+};
+
+export type VoucherToken = 'USDT' | 'USDC';
+
+export const VOUCHER_EXPIRY_DAYS = 7;
+
+/** The tiers a voucher can be issued for, with their USD face value. */
+export const VOUCHER_TIERS: { tier: Tier; valueUsd: number; tierIndex: number }[] = [
+  Tier.BRONZE,
+  Tier.SILVER,
+  Tier.GOLD,
+  Tier.PLATINUM,
+  Tier.DIAMOND,
+].map((tier) => ({ tier, valueUsd: TIER_VOLUMES[tier], tierIndex: TIER_INDEX[tier] }));
+
 export const RANK_REQUIREMENTS = [
   { name: Rank.LEGEND, volumeReq: 25000000 },
   { name: Rank.MASTER, volumeReq: 5000000 },

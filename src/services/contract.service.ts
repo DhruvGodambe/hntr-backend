@@ -65,6 +65,10 @@ export const contractABI = [
   'function acceptOwnership()',
 
   'function overrideMembershipTier(address user, uint8 tier)',
+  'function setBurnerWallet(address _burnerWallet)',
+  'function burnerWallet() view returns (address)',
+  'function voucherRedeemed(bytes32 voucherId) view returns (bool)',
+  'function redeemVoucher(bytes32 voucherId, address user, uint8 tier)',
 
   // --- User writes (backend-signed uplines + ranks) ---
   'function purchaseMembership(address user, uint8 tier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature)',
@@ -94,6 +98,8 @@ export const contractABI = [
   'event CommissionSeeded(address indexed user, address indexed token, uint256 withdrawable, uint256 locked, uint256 lastClaimed)',
   'event BootstrapSealed()',
   'event MembershipTierOverriden(address indexed user, uint8 tier, uint256 joinedAt)',
+  'event BurnerWalletUpdated(address burnerWallet)',
+  'event VoucherRedeemed(address indexed user, bytes32 indexed voucherId, uint8 oldTier, uint8 newTier, uint256 joinedAt)',
 
   // --- Errors (SafeERC20) ---
   'error SafeERC20FailedOperation(address token)',
@@ -133,6 +139,83 @@ export const SIGNATURE_TTL_SECONDS = 60 * 60; // 1 hour
 export const hntrContractWithCompanySigner = companyWallet
   ? hntrContract.connect(companyWallet)
   : null;
+
+// Optional signer for the on-chain burner wallet. Only available when
+// BURNER_WALLET_PRIVATE_KEY is configured; the sole sender of `redeemVoucher`, so
+// bearer-voucher redeemers never sign a tx or hold ETH. Holds ETH for gas only —
+// never tokens — and is deliberately NOT a commission signer.
+export const burnerWallet = ENV.BURNER_WALLET_PRIVATE_KEY
+  ? new ethers.Wallet(ENV.BURNER_WALLET_PRIVATE_KEY, provider)
+  : null;
+
+export const hntrContractWithBurnerSigner = burnerWallet
+  ? (hntrContract.connect(burnerWallet) as ethers.Contract)
+  : null;
+
+/**
+ * Startup guard: the configured burner key must control the on-chain burnerWallet,
+ * and must not have somehow become a commission signer. Logs loudly and returns a
+ * status object rather than throwing, so the rest of the API still boots.
+ */
+export async function verifyBurnerWallet(): Promise<{
+  configured: boolean;
+  matches: boolean;
+  onChain: string | null;
+  address: string | null;
+}> {
+  if (!burnerWallet) {
+    logger.warn('BURNER_WALLET_PRIVATE_KEY not set — voucher redemption is disabled.');
+    return { configured: false, matches: false, onChain: null, address: null };
+  }
+  try {
+    const onChain: string = await hntrContract.burnerWallet();
+    const matches = onChain.toLowerCase() === burnerWallet.address.toLowerCase();
+    if (!matches) {
+      logger.error(
+        `BURNER_WALLET_PRIVATE_KEY address ${burnerWallet.address} does not match on-chain burnerWallet ${onChain}. Voucher redemption will revert until setBurnerWallet is called.`,
+      );
+    }
+    const isSigner: boolean = await hntrContract.isAuthorizedSigner(burnerWallet.address);
+    if (isSigner) {
+      logger.error(
+        `SECURITY: burner wallet ${burnerWallet.address} is an authorized commission signer. Revoke it immediately.`,
+      );
+    }
+    return { configured: true, matches, onChain, address: burnerWallet.address };
+  } catch (err: any) {
+    logger.warn(`verifyBurnerWallet failed: ${err.message}`);
+    return { configured: true, matches: false, onChain: null, address: burnerWallet.address };
+  }
+}
+
+/** Burner gas-balance health, surfaced to the admin panel and the voucher cron. */
+export async function getBurnerHealth(): Promise<{
+  configuredAddress: string | null;
+  onChainAddress: string | null;
+  matches: boolean;
+  balanceEth: number;
+  minEth: number;
+  healthy: boolean;
+}> {
+  const status = await verifyBurnerWallet();
+  let balanceEth = 0;
+  if (burnerWallet) {
+    try {
+      balanceEth = Number(ethers.formatEther(await provider.getBalance(burnerWallet.address)));
+    } catch (err: any) {
+      logger.warn(`getBurnerHealth balance read failed: ${err.message}`);
+    }
+  }
+  const minEth = ENV.BURNER_MIN_ETH;
+  return {
+    configuredAddress: status.address,
+    onChainAddress: status.onChain,
+    matches: status.matches,
+    balanceEth,
+    minEth,
+    healthy: status.configured && status.matches && balanceEth >= minEth,
+  };
+}
 
 export function getErc20(tokenAddress: string) {
   return new ethers.Contract(tokenAddress, erc20ABI, provider);

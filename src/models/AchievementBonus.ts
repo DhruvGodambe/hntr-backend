@@ -5,10 +5,21 @@ export interface IAchievementBonus extends Document {
   username: string;
   rank: string;
   amountUSD: number;
-  status: 'PENDING' | 'PAID' | 'FAILED';
+  /**
+   * PENDING       — eligible for admin Distribute Rank Bonuses (two-hop via burner).
+   * PENDING_REVIEW — qualified while voucher-granted volume was in the downline;
+   *                  held for manual admin approval (moves to PENDING on approve).
+   * REJECTED      — admin declined; never pays out.
+   */
+  status: 'PENDING' | 'PENDING_REVIEW' | 'PAID' | 'FAILED' | 'REJECTED';
+  reviewReason?: string;
+  reviewedBy?: string;
+  reviewedAt?: Date;
   token?: string;
   tokenAddress?: string;
   txHash?: string;
+  /** DisbursementBatch id for the admin two-hop run that paid this bonus. */
+  batchId?: string;
   createdAt: Date;
   paidAt?: Date;
 }
@@ -34,9 +45,19 @@ const AchievementBonusSchema: Schema = new Schema({
   },
   status: {
     type: String,
-    enum: ['PENDING', 'PAID', 'FAILED'],
+    enum: ['PENDING', 'PENDING_REVIEW', 'PAID', 'FAILED', 'REJECTED'],
     default: 'PENDING',
     index: true,
+  },
+  reviewReason: {
+    type: String,
+    maxlength: 512,
+  },
+  reviewedBy: {
+    type: String,
+  },
+  reviewedAt: {
+    type: Date,
   },
   token: {
     type: String,
@@ -46,6 +67,10 @@ const AchievementBonusSchema: Schema = new Schema({
   },
   txHash: {
     type: String,
+  },
+  batchId: {
+    type: String,
+    index: true,
   },
   createdAt: {
     type: Date,

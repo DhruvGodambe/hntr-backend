@@ -9,6 +9,7 @@ import adminRoutes from './routes/admin.routes';
 import adminPanelRoutes from './routes/adminPanel.routes';
 import authRoutes from './routes/auth.routes';
 import membershipRoutes from './routes/membership.routes';
+import voucherRoutes from './routes/voucher.routes';
 import marketRoutes from './routes/market.routes';
 
 export function createApp(): Express {
@@ -22,6 +23,7 @@ export function createApp(): Express {
   app.use('/api/users', userRoutes);
   app.use('/api/network', networkRoutes);
   app.use('/api/membership', membershipRoutes);
+  app.use('/api/vouchers', voucherRoutes);
   app.use('/api/market', marketRoutes);
   app.use('/api/admin', adminPanelRoutes);
   app.use('/api/admin', adminRoutes);

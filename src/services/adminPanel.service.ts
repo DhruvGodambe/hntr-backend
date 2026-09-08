@@ -5,6 +5,9 @@ import StrategyPool from '../models/StrategyPool';
 import AdminUserOverride from '../models/AdminUserOverride';
 import AdminSettings from '../models/AdminSettings';
 import PointsLedger from '../models/PointsLedger';
+import Payout from '../models/Payout';
+import AchievementBonus from '../models/AchievementBonus';
+import DisbursementBatch from '../models/DisbursementBatch';
 import { RewardsService } from './rewards.service';
 import { NetworkService } from './network.service';
 import { CompanyWalletService } from './companyWallet.service';
@@ -912,10 +915,18 @@ export class AdminPanelService {
   static async getLeadershipPreview() {
     const leadershipWallet = await hntrContract.leadershipWallet();
     const balances = await readWalletStablecoinBalances(String(leadershipWallet));
+    const health = await RewardsService.getDisbursementWalletHealth(String(leadershipWallet));
 
     const eligibleUsers = await User.find({ rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] } })
       .select('username rank walletAddress')
       .lean();
+
+    const month = new Date().toISOString().slice(0, 7);
+    const paidUsernames = new Set(
+      (
+        await Payout.find({ month, status: 'PAID' }).select('username').lean()
+      ).map((p) => p.username),
+    );
 
     let totalShares = 0;
     const hunters = eligibleUsers
@@ -927,34 +938,138 @@ export class AdminPanelService {
           rank: u.rank,
           shares,
           walletAddress: u.walletAddress,
+          alreadyPaid: paidUsernames.has(u.username),
         };
       })
       .sort((a, b) => b.shares - a.shares);
 
+    const unpaidShares = hunters.filter((h) => !h.alreadyPaid).reduce((s, h) => s + h.shares, 0);
     const withEstimates = hunters.map((h) => ({
       ...h,
       estimatedPayoutUSD:
-        totalShares > 0 ? Number(((balances.totalUsd * h.shares) / totalShares).toFixed(2)) : 0,
+        !h.alreadyPaid && unpaidShares > 0
+          ? Number(((balances.totalUsd * h.shares) / unpaidShares).toFixed(2))
+          : h.alreadyPaid
+            ? 0
+            : totalShares > 0
+              ? Number(((balances.totalUsd * h.shares) / totalShares).toFixed(2))
+              : 0,
     }));
+
+    const lastBatch = await DisbursementBatch.findOne({ type: 'LEADERSHIP', month })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const fundTotals = {
+      USDT: health.protocolTokens.find((t) => t.symbol === 'USDT')?.balance ?? 0,
+      USDC: health.protocolTokens.find((t) => t.symbol === 'USDC')?.balance ?? 0,
+    };
 
     return {
       poolBalanceUSD: balances.totalUsd,
       poolTokens: balances.tokens,
       leadershipWallet: String(leadershipWallet).toLowerCase(),
       eligibleCount: eligibleUsers.length,
+      unpaidCount: hunters.filter((h) => !h.alreadyPaid).length,
       eligibleUsers: withEstimates,
       totalShares,
+      month,
+      fundTotals,
+      hopNote: health.hopNote,
+      protocolEth: health.protocolEth,
+      burnerEth: health.burnerEth,
+      burnerMinEth: health.burnerMinEth,
+      burnerWallet: health.burnerWallet,
+      burnerTokens: health.burnerTokens,
+      lastBatch: lastBatch
+        ? {
+            id: String(lastBatch._id),
+            status: lastBatch.status,
+            triggeredBy: lastBatch.triggeredBy,
+            createdAt: lastBatch.createdAt,
+            fundTransfers: lastBatch.fundTransfers,
+            error: lastBatch.error,
+          }
+        : null,
     };
   }
 
-  static async distributeLeadership() {
-    // Same entrypoint as the 1st-of-month cron (`0 0 1 * *`).
-    return runMonthlyLeadershipPayout();
+  static async getAchievementPreview() {
+    const achievementWallet = await hntrContract.achievementWallet();
+    const balances = await readWalletStablecoinBalances(String(achievementWallet));
+    const health = await RewardsService.getDisbursementWalletHealth(String(achievementWallet));
+
+    const pending = await AchievementBonus.find({ status: 'PENDING' })
+      .sort({ createdAt: 1 })
+      .lean();
+    const pendingReviewCount = await AchievementBonus.countDocuments({ status: 'PENDING_REVIEW' });
+    const totalPendingUSD = pending.reduce((sum, b) => sum + (b.amountUSD || 0), 0);
+
+    const lastBatch = await DisbursementBatch.findOne({ type: 'ACHIEVEMENT' })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return {
+      poolBalanceUSD: balances.totalUsd,
+      poolTokens: balances.tokens,
+      achievementWallet: String(achievementWallet).toLowerCase(),
+      pendingCount: pending.length,
+      pendingReviewCount,
+      totalPendingUSD: Number(totalPendingUSD.toFixed(2)),
+      pendingBonuses: pending.map((b) => ({
+        id: String(b._id),
+        username: b.username,
+        walletAddress: b.walletAddress,
+        rank: b.rank,
+        amountUSD: b.amountUSD,
+        createdAt: b.createdAt,
+      })),
+      hopNote: health.hopNote,
+      protocolEth: health.protocolEth,
+      burnerEth: health.burnerEth,
+      burnerMinEth: health.burnerMinEth,
+      burnerWallet: health.burnerWallet,
+      burnerTokens: health.burnerTokens,
+      lastBatch: lastBatch
+        ? {
+            id: String(lastBatch._id),
+            status: lastBatch.status,
+            triggeredBy: lastBatch.triggeredBy,
+            createdAt: lastBatch.createdAt,
+            fundTransfers: lastBatch.fundTransfers,
+            error: lastBatch.error,
+          }
+        : null,
+    };
   }
 
-  static async distributeAchievement() {
-    const payouts = await RewardsService.disbursePendingAchievementBonuses();
+  static async distributeLeadership(triggeredBy = 'admin') {
+    return runMonthlyLeadershipPayout(triggeredBy);
+  }
+
+  static async distributeAchievement(triggeredBy = 'admin') {
+    const payouts = await RewardsService.disbursePendingAchievementBonuses(triggeredBy);
     return { payouts, paid: payouts.length };
+  }
+
+  static async listRecentDisbursements(limit = 20) {
+    const items = await DisbursementBatch.find()
+      .sort({ createdAt: -1 })
+      .limit(Math.min(100, Math.max(1, limit)))
+      .lean();
+    return items.map((b) => ({
+      id: String(b._id),
+      type: b.type,
+      month: b.month,
+      status: b.status,
+      triggeredBy: b.triggeredBy,
+      protocolWallet: b.protocolWallet,
+      burnerWallet: b.burnerWallet,
+      fundTransfers: b.fundTransfers,
+      dispersalCount: b.dispersals?.length || 0,
+      error: b.error,
+      createdAt: b.createdAt,
+    }));
   }
 
   static async getRankBonusReport(page: number, limit: number, skip: number) {
