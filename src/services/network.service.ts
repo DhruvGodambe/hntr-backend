@@ -145,7 +145,17 @@ export class NetworkService {
   static async getNetworkTree(username: string, maxDepth = 3, maxNodes = 200): Promise<NetworkTreeNode | null> {
     let visited = 0;
 
-    const build = async (uname: string, depth: number): Promise<NetworkTreeNode | null> => {
+    // `ancestryPath` is the set of usernames from the root down to the current
+    // node. It stops the walk if the downline data contains a self-reference or a
+    // cycle (e.g. a corrupt directDownline that lists the node itself), which would
+    // otherwise recurse `maxDepth` levels deep and render the same users repeatedly.
+    const build = async (
+      uname: string,
+      depth: number,
+      ancestryPath: Set<string>,
+    ): Promise<NetworkTreeNode | null> => {
+      if (ancestryPath.has(uname)) return null;
+
       const user = await User.findOne({ username: uname });
       if (!user) return null;
       visited += 1;
@@ -160,9 +170,20 @@ export class NetworkService {
       };
 
       if (depth < maxDepth) {
+        const nextPath = new Set(ancestryPath).add(uname);
+        const seenChildren = new Set<string>();
         for (const childUsername of user.directDownline) {
           if (visited >= maxNodes) break;
-          const child = await build(childUsername, depth + 1);
+          if (
+            !childUsername ||
+            childUsername === uname ||
+            nextPath.has(childUsername) ||
+            seenChildren.has(childUsername)
+          ) {
+            continue;
+          }
+          seenChildren.add(childUsername);
+          const child = await build(childUsername, depth + 1, nextPath);
           if (child) node.children.push(child);
         }
       }
@@ -170,7 +191,7 @@ export class NetworkService {
       return node;
     };
 
-    return build(username, 0);
+    return build(username, 0, new Set());
   }
 
   /**
@@ -181,7 +202,12 @@ export class NetworkService {
     if (!user) throw new Error('User not found');
 
     const legVolumes = new Map<string, number>();
-    const directDownline = user.directDownline || [];
+    // Legs are this user's *direct* referrals — never themselves, and each name once.
+    // Guards against corrupt directDownline data (self-reference / duplicates) that
+    // would otherwise inflate teamVolume by counting a phantom "self" leg.
+    const directDownline = [...new Set(user.directDownline || [])].filter(
+      (d) => d && d !== username,
+    );
 
     logger.info(`Calculating leg volumes for ${username}: directDownline=[${directDownline.join(', ')}]`);
 
@@ -210,6 +236,13 @@ export class NetworkService {
 
     user.legVolumes = legVolumes;
     user.teamVolume = Array.from(legVolumes.values()).reduce((sum, current) => sum + current, 0);
+    // Persist the de-duped, self-free list so a stale record self-heals on recalc.
+    if (
+      directDownline.length !== (user.directDownline || []).length ||
+      directDownline.some((d, i) => d !== user.directDownline[i])
+    ) {
+      user.directDownline = directDownline;
+    }
     await user.save();
 
     logger.info(`Saved ${username}: teamVolume=${user.teamVolume}, legs=${JSON.stringify(Object.fromEntries(legVolumes))}`);

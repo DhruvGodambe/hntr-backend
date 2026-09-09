@@ -66,13 +66,27 @@ export class UserService {
   }): Promise<IUser> {
     const { username, walletAddress, email, phone, sponsorUsername } = data;
 
+    // A username registered once must never be re-created — a second registerUser
+    // for the same name would push it into a sponsor's directDownline before the
+    // unique-index E11000 on save, corrupting the tree.
+    const alreadyRegistered = await User.findOne({ username });
+    if (alreadyRegistered) {
+      throw new UserError('USERNAME_TAKEN', 'That username is already registered.', 409);
+    }
+
     let ancestors: string[] = [];
     if (sponsorUsername) {
+      if (sponsorUsername.trim().toLowerCase() === username.trim().toLowerCase()) {
+        throw new UserError('SELF_SPONSOR', 'You cannot use your own username as your sponsor.', 400);
+      }
       const sponsor = await this.assertSponsorEligible(sponsorUsername);
+      if (sponsor.username === username) {
+        throw new UserError('SELF_SPONSOR', 'You cannot sponsor yourself.', 400);
+      }
       ancestors = [...sponsor.ancestors, sponsor.username];
 
-      sponsor.directDownline.push(username);
-      await sponsor.save();
+      // $addToSet: never duplicate, and the self-check above keeps `username` out.
+      await User.updateOne({ _id: sponsor._id }, { $addToSet: { directDownline: username } });
     }
 
     const newUser = new User({
