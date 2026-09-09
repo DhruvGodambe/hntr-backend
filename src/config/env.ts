@@ -35,7 +35,7 @@ export const ENV = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017/hntr',
   RPC_URL: process.env.RPC_URL || process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
-  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0x0be416578F36e0181C211cBBB703f433ca117595',
+  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0x40c442AD0fB9545EaECb629572741eb65Bf484A4',
   USDT_ADDRESS: process.env.USDT_ADDRESS || '0xff26Bf42e258979e307B581F32A7C984BCEDA66a',
   USDC_ADDRESS: process.env.USDC_ADDRESS || '0x1A1Bf3C12dc85219D2422dd9B936c5845Be899A1',
   JWT_SECRET: process.env.JWT_SECRET || 'dev-insecure-secret-change-me',
@@ -53,7 +53,7 @@ export const ENV = {
   // Concurrent clients within this window read from DB instead of hitting CoinGecko.
   COINGECKO_CACHE_TTL_MS: Number(process.env.COINGECKO_CACHE_TTL_MS || 120_000),
   OPENSEA_API_KEY: process.env.OPENSEA_API_KEY || '',
-  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11663429),
+  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11666520),
   // Protocol wallets (treasury/leadership/…) keep the same address across membership
   // redeploys. Admin wallet ledgers scan ERC20 Transfer history from this block
   // (defaults to 0) so prior-contract inflows are not truncated when CONTRACT_DEPLOY_BLOCK
