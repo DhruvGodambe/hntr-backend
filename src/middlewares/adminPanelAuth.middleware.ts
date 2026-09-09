@@ -9,7 +9,6 @@ declare global {
     interface Request {
       isAdminPanel?: boolean;
       adminUsername?: string;
-      adminId?: string;
     }
   }
 }
@@ -32,7 +31,6 @@ export function requireAdminPanelAuth(req: Request, res: Response, next: NextFun
     const payload = AdminAuthService.verifyToken(token);
     req.isAdminPanel = true;
     req.adminUsername = payload.username || 'admin';
-    req.adminId = payload.sub;
     next();
   } catch {
     sendError(res, 'Invalid or expired admin session. Please sign in again.', 401);
