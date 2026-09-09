@@ -771,10 +771,11 @@ export class AdminPanelService {
     };
 
     const walletAddress = ethers.getAddress(String(await addressMap[walletKey as (typeof validKeys)[number]]()));
-    // Do NOT use CONTRACT_DEPLOY_BLOCK here — that tracks the latest membership
-    // redeploy. Protocol wallets persist across cutovers, so their ERC20 Transfer
-    // history must include prior-contract inflows/outflows.
-    const fromBlock = Math.max(0, ENV.LEDGER_FROM_BLOCK || 0);
+    // Scan wallet ledgers from the current membership contract's deployment block
+    // so a fresh redeploy shows only that contract's activity. LEDGER_FROM_BLOCK,
+    // when set, overrides this to reach further back (e.g. to include prior-contract
+    // history for protocol wallets that persist across cutovers).
+    const fromBlock = Math.max(0, ENV.LEDGER_FROM_BLOCK || ENV.CONTRACT_DEPLOY_BLOCK || 0);
     const [usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
       hntrContract.usdt(),
       hntrContract.usdc(),
