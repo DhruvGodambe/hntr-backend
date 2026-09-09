@@ -1,26 +1,25 @@
 /**
- * Inspect who owns the company wallet + current admin row.
+ * Inspect who owns the security wallet + current admin row.
  *
- *   npx tsx src/scripts/inspect-admin-company-wallet.ts
+ *   npx tsx src/scripts/inspect-admin-security-wallet.ts
  */
 import mongoose from 'mongoose';
-import { ethers } from 'ethers';
 import { connectDB } from '../config/db';
-import { ENV } from '../config/env';
+import { hntrContract } from '../services/contract.service';
 import User from '../models/User';
 
 async function main() {
-  const companyWallet = new ethers.Wallet(ENV.COMPANY_WALLET_PRIVATE_KEY).address.toLowerCase();
+  const securityWalletAddr = String(await hntrContract.securityWallet()).toLowerCase();
   await connectDB();
 
   const admin = await User.findOne({ username: 'admin' }).lean();
-  const byWallet = await User.findOne({ walletAddress: companyWallet }).lean();
+  const byWallet = await User.findOne({ walletAddress: securityWalletAddr }).lean();
   const byType = await User.find({ type: 'admin' }).lean();
 
   console.log(
     JSON.stringify(
       {
-        companyWallet,
+        securityWalletAddr,
         admin,
         userWithCompanyWallet: byWallet,
         allAdmins: byType,

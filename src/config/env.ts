@@ -35,7 +35,7 @@ export const ENV = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   MONGO_URI: process.env.MONGO_URI || 'mongodb://localhost:27017/hntr',
   RPC_URL: process.env.RPC_URL || process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
-  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0x40c442AD0fB9545EaECb629572741eb65Bf484A4',
+  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS || '0xba7470F39C90C6ff9AEFa905382eCec69cD112c9',
   USDT_ADDRESS: process.env.USDT_ADDRESS || '0xff26Bf42e258979e307B581F32A7C984BCEDA66a',
   USDC_ADDRESS: process.env.USDC_ADDRESS || '0x1A1Bf3C12dc85219D2422dd9B936c5845Be899A1',
   JWT_SECRET: process.env.JWT_SECRET || 'dev-insecure-secret-change-me',
@@ -53,26 +53,17 @@ export const ENV = {
   // Concurrent clients within this window read from DB instead of hitting CoinGecko.
   COINGECKO_CACHE_TTL_MS: Number(process.env.COINGECKO_CACHE_TTL_MS || 120_000),
   OPENSEA_API_KEY: process.env.OPENSEA_API_KEY || '',
-  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11666520),
-  // Protocol wallets (treasury/leadership/…) keep the same address across membership
-  // redeploys. Admin wallet ledgers scan ERC20 Transfer history from this block
+  CONTRACT_DEPLOY_BLOCK: Number(process.env.CONTRACT_DEPLOY_BLOCK || 11670703),
+  // Protocol wallets (company/leadership/rank/pool/security) keep the same address across
+  // membership redeploys. Admin wallet ledgers scan ERC20 Transfer history from this block
   // (defaults to 0) so prior-contract inflows are not truncated when CONTRACT_DEPLOY_BLOCK
   // is bumped to the latest membership deploy.
   LEDGER_FROM_BLOCK: Number(readEnv('LEDGER_FROM_BLOCK', '0')),
-  // Private key that controls `leadershipWallet` on-chain - the only wallet that can
-  // pay out the monthly leadership pool, since it holds that pool's actual token balance.
-  LEADERSHIP_PRIVATE_KEY: readEnv('LEADERSHIP_PRIVATE_KEY'),
-  // Private key that controls `achievementWallet` on-chain - used by the daily cron to
-  // auto-deposit one-time rank achievement bonuses when the wallet is funded enough.
-  ACHIEVEMENT_WALLET_PRIVATE_KEY: readEnv('ACHIEVEMENT_WALLET_PRIVATE_KEY'),
-  // Private key that controls `companyWallet` on-chain. Required for the backend to:
-  // - sign purchase/upgrade commission-auth payloads (uplines + ranks)
-  // - call `getOverdueWallets()` / `withdrawCompanyWallet()` for overdue users
-  COMPANY_WALLET_PRIVATE_KEY: process.env.COMPANY_WALLET_PRIVATE_KEY || '',
-  // Private key that controls `burnerWallet` on-chain - the hot key that submits
-  // voucher redemptions (`redeemVoucher`) so the redeemer never signs a tx or pays
-  // gas. Holds ETH only; must NEVER hold tokens and is deliberately not a commission
-  // signer. Voucher redemption is disabled when this is unset.
+  // Private key that controls `burnerWallet` on-chain - the hot key that submits voucher
+  // redemptions (`redeemVoucher`), signs purchase/upgrade commission-auth payloads
+  // (uplines + ranks), calls `overrideMembershipTier`, and is the hop-2 payer for
+  // leadership/rank/pool disbursements. Holds ETH for gas + the disbursement float.
+  // Membership purchases and voucher redemption are disabled when this is unset.
   BURNER_WALLET_PRIVATE_KEY: process.env.BURNER_WALLET_PRIVATE_KEY || '',
   // Expected burner address, checked against on-chain `burnerWallet()` at startup.
   BURNER_WALLET: process.env.BURNER_WALLET || '',

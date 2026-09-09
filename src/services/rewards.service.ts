@@ -48,43 +48,42 @@ type PlannedRecipient = {
 
 export class RewardsService {
   /**
-   * Plan `owedRaw` across pools by draining USDT first, then USDC.
-   * Does not mutate balances — caller applies after successful transfers.
-   * Returns null if combined remaining is insufficient.
+   * Pick ONE token to pay a recipient's full `owedRaw` from — USDT if its pool can
+   * cover the whole amount, else USDC if it can. Never splits a single recipient
+   * across both tokens ("no halfies"). Returns null if neither token alone suffices.
+   * Does not mutate balances — caller applies after a successful transfer.
    */
-  private static planUsdtFirst(pools: StablecoinPool[], owedRaw: bigint): TokenSlice[] | null {
+  private static planSingleToken(pools: StablecoinPool[], owedRaw: bigint): TokenSlice | null {
     const zero = BigInt(0);
-    if (owedRaw <= zero) return [];
-
-    const ordered = (['USDT', 'USDC'] as const)
-      .map((symbol) => pools.find((p) => p.symbol === symbol))
-      .filter((p): p is StablecoinPool => Boolean(p));
-
-    const available = ordered.reduce((sum, p) => sum + p.rawBalance, zero);
-    if (available < owedRaw) return null;
-
-    const remainingBySymbol: Record<string, bigint> = {};
-    for (const pool of ordered) remainingBySymbol[pool.symbol] = pool.rawBalance;
-
-    let remaining = owedRaw;
-    const slices: TokenSlice[] = [];
-    for (const pool of ordered) {
-      if (remaining <= zero) break;
-      const availableHere = remainingBySymbol[pool.symbol] || zero;
-      if (availableHere <= zero) continue;
-      const take = availableHere < remaining ? availableHere : remaining;
-      if (take <= zero) continue;
-      slices.push({ pool, amountRaw: take });
-      remainingBySymbol[pool.symbol] = availableHere - take;
-      remaining -= take;
+    if (owedRaw <= zero) return null;
+    for (const symbol of ['USDT', 'USDC'] as const) {
+      const pool = pools.find((p) => p.symbol === symbol);
+      if (pool && pool.rawBalance >= owedRaw) return { pool, amountRaw: owedRaw };
     }
-    return remaining === zero ? slices : null;
+    return null;
   }
 
   private static applySlices(slices: TokenSlice[]) {
     for (const { pool, amountRaw } of slices) {
       pool.rawBalance -= amountRaw;
     }
+  }
+
+  /**
+   * Given the total owed for a run, split it into how much USDT vs USDC the admin
+   * should send the burner: fill from the funding wallet's USDT first, then USDC for
+   * the shortfall. (Recipient-level payout still pays each user in a single token.)
+   */
+  private static fundingSplit(
+    totalOwedRaw: bigint,
+    fundingWalletPools: StablecoinPool[],
+  ): { requiredUsdtRaw: bigint; requiredUsdcRaw: bigint } {
+    const zero = BigInt(0);
+    if (totalOwedRaw <= zero) return { requiredUsdtRaw: zero, requiredUsdcRaw: zero };
+    const usdtHave = fundingWalletPools.find((p) => p.symbol === 'USDT')?.rawBalance ?? zero;
+    const requiredUsdtRaw = usdtHave >= totalOwedRaw ? totalOwedRaw : usdtHave;
+    const requiredUsdcRaw = totalOwedRaw - requiredUsdtRaw;
+    return { requiredUsdtRaw, requiredUsdcRaw };
   }
 
   private static async loadStablecoinPools(walletAddress: string): Promise<StablecoinPool[]> {
@@ -279,41 +278,26 @@ export class RewardsService {
   }
 
   /**
-   * Pays PENDING achievement bonuses via two-hop:
-   * achievement wallet → burner (admin pays gas) → users (burner pays gas).
-   * Previous direct-transfer path preserved in rewards.legacy-direct.ts.
+   * Pays PENDING rank bonuses from the burner wallet. The admin funds the burner
+   * beforehand by connecting the rank wallet in the admin UI and transferring
+   * USDT/USDC to the burner; this method only performs the burner → user payouts.
    */
   static async disbursePendingAchievementBonuses(triggeredBy = 'system') {
-    if (!ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY) {
-      throw new Error(
-        'ACHIEVEMENT_WALLET_PRIVATE_KEY not found in environment for payouts!',
-      );
-    }
-
     const burner = this.requireBurnerWallet();
-    const achievementWalletAddr = await hntrContract.achievementWallet();
-    const protocolSigner = new ethers.Wallet(ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY, provider);
-    if (protocolSigner.address.toLowerCase() !== String(achievementWalletAddr).toLowerCase()) {
-      throw new Error(
-        `ACHIEVEMENT_WALLET_PRIVATE_KEY address ${protocolSigner.address} does not match on-chain achievementWallet ${achievementWalletAddr}`,
-      );
-    }
-
-    await this.withdrawProtocolBalances(protocolSigner);
+    const rankWalletAddr = await hntrContract.rankWallet();
 
     const pending = await AchievementBonus.find({ status: 'PENDING' }).sort({ createdAt: 1 });
     if (pending.length === 0) {
-      console.log('No pending achievement bonuses to disburse.');
+      console.log('No pending rank bonuses to disburse.');
       return [];
     }
 
-    const protocolPools = await this.loadStablecoinPools(String(achievementWalletAddr));
     const burnerPoolsInitial = await this.loadStablecoinPools(burner.address);
-    const planningPools = this.mergePools(protocolPools, burnerPoolsInitial);
+    const planningPools = this.clonePools(burnerPoolsInitial);
 
     planningPools.forEach((p) =>
       console.log(
-        `Achievement plan pool ${p.symbol}: $${ethers.formatUnits(p.rawBalance, p.decimals)} (protocol+burner)`,
+        `Rank bonus plan pool ${p.symbol}: $${ethers.formatUnits(p.rawBalance, p.decimals)} (burner)`,
       ),
     );
 
@@ -325,10 +309,10 @@ export class RewardsService {
       const amountRaw = ethers.parseUnits(bonus.amountUSD.toFixed(precision), planningPools[0].decimals);
       if (amountRaw <= zero) continue;
 
-      const slices = this.planUsdtFirst(planningPools, amountRaw);
-      if (!slices || slices.length === 0) {
+      const slice = this.planSingleToken(planningPools, amountRaw);
+      if (!slice) {
         console.log(
-          `Skipping ${bonus.username} ${bonus.rank} $${bonus.amountUSD} — underfunded (USDT-first)`,
+          `Skipping ${bonus.username} ${bonus.rank} $${bonus.amountUSD} — burner has no single token that covers it`,
         );
         continue;
       }
@@ -339,14 +323,16 @@ export class RewardsService {
         rank: bonus.rank,
         bonusId: String(bonus._id),
         amountUSD: bonus.amountUSD,
-        slices: slices.map((s) => ({
-          symbol: s.pool.symbol,
-          tokenAddress: s.pool.address,
-          amountRaw: s.amountRaw,
-          decimals: s.pool.decimals,
-        })),
+        slices: [
+          {
+            symbol: slice.pool.symbol,
+            tokenAddress: slice.pool.address,
+            amountRaw: slice.amountRaw,
+            decimals: slice.pool.decimals,
+          },
+        ],
       });
-      this.applySlices(slices);
+      this.applySlices([slice]);
     }
 
     if (recipients.length === 0) {
@@ -355,31 +341,22 @@ export class RewardsService {
     }
 
     const batch = await DisbursementBatch.create({
-      type: 'ACHIEVEMENT',
-      status: 'FUNDING',
+      type: 'RANK',
+      status: 'DISPERSING',
       triggeredBy,
-      protocolWallet: String(achievementWalletAddr).toLowerCase(),
+      protocolWallet: String(rankWalletAddr).toLowerCase(),
       burnerWallet: burner.address.toLowerCase(),
       fundTransfers: [],
       dispersals: [],
     });
 
     try {
-      const needed = this.sumSliceTotals(recipients);
-      const fundTransfers = await this.fundBurnerFromProtocol(
-        protocolSigner,
-        burner.address,
-        needed,
-        burnerPoolsInitial,
-      );
-      batch.fundTransfers = fundTransfers;
-      batch.status = 'DISPERSING';
       await batch.save();
 
       const burnerPools = await this.loadStablecoinPools(burner.address);
       const paidOut = [];
       const dispersals: IDispersalEntry[] = [];
-      const fundTxHashes = fundTransfers.map((f) => f.txHash);
+      const fundTxHashes: string[] = [];
 
       for (const recipient of recipients) {
         const transferMeta: { symbol: string; amount: number; txHash: string }[] = [];
@@ -540,8 +517,8 @@ export class RewardsService {
       .sort({ createdAt: -1 })
       .lean();
 
-    const achievementWallet = await hntrContract.achievementWallet();
-    const walletBalances = await this.getPoolWalletBalances(achievementWallet);
+    const rankWallet = await hntrContract.rankWallet();
+    const walletBalances = await this.getPoolWalletBalances(rankWallet);
     const poolBalanceUSD = walletBalances.totalUSD;
 
     const lifetimePaidUSD = bonuses
@@ -669,26 +646,14 @@ export class RewardsService {
   }
 
   /**
-   * Monthly leadership pool distribution via two-hop:
-   * leadership wallet → burner (admin pays gas) → users (burner pays gas).
-   * Previous direct-transfer path preserved in rewards.legacy-direct.ts.
+   * Monthly leadership pool distribution from the burner wallet. The admin funds
+   * the burner beforehand by connecting the leadership wallet in the admin UI and
+   * transferring USDT/USDC to the burner; this method only performs the
+   * burner → user payouts.
    */
   static async calculateMonthlyLeadershipPool(triggeredBy = 'system') {
     const leadershipWallet = await hntrContract.leadershipWallet();
-
-    if (!ENV.LEADERSHIP_PRIVATE_KEY) {
-      throw new Error('LEADERSHIP_PRIVATE_KEY not found in environment for payouts!');
-    }
-
     const burner = this.requireBurnerWallet();
-    const protocolSigner = new ethers.Wallet(ENV.LEADERSHIP_PRIVATE_KEY, provider);
-    if (protocolSigner.address.toLowerCase() !== String(leadershipWallet).toLowerCase()) {
-      throw new Error(
-        `LEADERSHIP_PRIVATE_KEY address ${protocolSigner.address} does not match on-chain leadershipWallet ${leadershipWallet}`,
-      );
-    }
-
-    await this.withdrawProtocolBalances(protocolSigner);
 
     const eligibleUsers = await User.find({
       rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
@@ -699,13 +664,12 @@ export class RewardsService {
       return [];
     }
 
-    const protocolPools = await this.loadStablecoinPools(String(leadershipWallet));
     const burnerPoolsInitial = await this.loadStablecoinPools(burner.address);
-    const planningPools = this.mergePools(protocolPools, burnerPoolsInitial);
+    const planningPools = this.clonePools(burnerPoolsInitial);
 
     planningPools.forEach((p) =>
       console.log(
-        `Leadership plan pool ${p.symbol}: $${ethers.formatUnits(p.rawBalance, p.decimals)} (protocol+burner)`,
+        `Leadership plan pool ${p.symbol}: $${ethers.formatUnits(p.rawBalance, p.decimals)} (burner)`,
       ),
     );
 
@@ -759,8 +723,12 @@ export class RewardsService {
         continue;
       }
 
-      const slices = this.planUsdtFirst(workPools, owedRaw);
-      if (!slices || slices.length === 0) {
+      // Pay this leader's whole share from a single token — USDT first, else USDC.
+      const slice = this.planSingleToken(workPools, owedRaw);
+      if (!slice) {
+        console.log(
+          `Skipping ${userShare.username} — no single token covers their $${ethers.formatUnits(owedRaw, workPools[0].decimals)} share`,
+        );
         remainingShares -= userShare.shares;
         continue;
       }
@@ -770,14 +738,16 @@ export class RewardsService {
         walletAddress: userShare.walletAddress,
         rank: userShare.rank,
         shares: userShare.shares,
-        slices: slices.map((s) => ({
-          symbol: s.pool.symbol,
-          tokenAddress: s.pool.address,
-          amountRaw: s.amountRaw,
-          decimals: s.pool.decimals,
-        })),
+        slices: [
+          {
+            symbol: slice.pool.symbol,
+            tokenAddress: slice.pool.address,
+            amountRaw: slice.amountRaw,
+            decimals: slice.pool.decimals,
+          },
+        ],
       });
-      this.applySlices(slices);
+      this.applySlices([slice]);
       remainingShares -= userShare.shares;
     }
 
@@ -789,7 +759,7 @@ export class RewardsService {
     const batch = await DisbursementBatch.create({
       type: 'LEADERSHIP',
       month: currentMonth,
-      status: 'FUNDING',
+      status: 'DISPERSING',
       triggeredBy,
       protocolWallet: String(leadershipWallet).toLowerCase(),
       burnerWallet: burner.address.toLowerCase(),
@@ -798,21 +768,12 @@ export class RewardsService {
     });
 
     try {
-      const needed = this.sumSliceTotals(recipients);
-      const fundTransfers = await this.fundBurnerFromProtocol(
-        protocolSigner,
-        burner.address,
-        needed,
-        burnerPoolsInitial,
-      );
-      batch.fundTransfers = fundTransfers;
-      batch.status = 'DISPERSING';
       await batch.save();
 
       const burnerPools = await this.loadStablecoinPools(burner.address);
       const payoutsSaved = [];
       const dispersals: IDispersalEntry[] = [];
-      const fundTxHashes = fundTransfers.map((f) => f.txHash);
+      const fundTxHashes: string[] = [];
 
       for (const recipient of recipients) {
         const breakdown: IPayoutBreakdownEntry[] = [];
@@ -971,7 +932,7 @@ export class RewardsService {
       })),
       protocolCombined,
       hopNote:
-        'Hop 1: protocol wallet transfers USDT/USDC to burner (protocol pays gas). Hop 2: burner pays eligible users (burner pays gas).',
+        'Step 1: connect the funding wallet and send the burner the "Send to burner" amount — USDT first, then USDC for the rest. Step 2: Distribute pays each recipient entirely in one token (USDT while it lasts, then USDC) — never a mix per recipient.',
     };
   }
 }

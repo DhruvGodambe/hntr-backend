@@ -3,6 +3,8 @@ import mongoose, { Schema, Document } from 'mongoose';
 export type PointsSource =
   | 'MEMBERSHIP_PURCHASE'
   | 'MEMBERSHIP_UPGRADE'
+  | 'MEMBERSHIP_VOUCHER_REDEEM'
+  | 'MEMBERSHIP_OVERRIDE'
   | 'COMMISSION_EARNED'
   | 'POOL_DEPOSIT';
 
@@ -34,7 +36,14 @@ const PointsLedgerSchema: Schema = new Schema({
   },
   source: {
     type: String,
-    enum: ['MEMBERSHIP_PURCHASE', 'MEMBERSHIP_UPGRADE', 'COMMISSION_EARNED', 'POOL_DEPOSIT'],
+    enum: [
+      'MEMBERSHIP_PURCHASE',
+      'MEMBERSHIP_UPGRADE',
+      'MEMBERSHIP_VOUCHER_REDEEM',
+      'MEMBERSHIP_OVERRIDE',
+      'COMMISSION_EARNED',
+      'POOL_DEPOSIT',
+    ],
     required: true,
   },
   usdValue: {

@@ -9,11 +9,13 @@ export interface ITransaction extends Document {
     | 'COMMISSION_CLAIM'
     | 'COMMISSION_EARNED'
     | 'COMMISSION_WITHDRAWN'
-    | 'COMPANY_WALLET_WITHDRAWN'
-    | 'VOUCHER_MEMBERSHIP_REDEEM';
+    | 'UNCLAIMED_WITHDRAWN'
+    | 'COMPANY_WALLET_WITHDRAWN' // legacy alias for UNCLAIMED_WITHDRAWN (pre-rename rows)
+    | 'VOUCHER_MEMBERSHIP_REDEEM'
+    | 'MEMBERSHIP_OVERRIDE';
   tier?: string;
   token?: string;
-  amount: number; // total for COMMISSION_EARNED, withdrawn amount for COMMISSION_WITHDRAWN / COMPANY_WALLET_WITHDRAWN; granted tier face value (no money moved) for VOUCHER_MEMBERSHIP_REDEEM
+  amount: number; // total for COMMISSION_EARNED, withdrawn amount for COMMISSION_WITHDRAWN / UNCLAIMED_WITHDRAWN; granted tier face value (no money moved) for VOUCHER_MEMBERSHIP_REDEEM / MEMBERSHIP_OVERRIDE
   liquidAmount?: number; // 80% of the commission (claimable part)
   lockedAmount?: number; // 20% of the commission (locked / pool-wallet part)
   level?: number; // referral level for COMMISSION_EARNED (1-12)
@@ -45,8 +47,10 @@ const TransactionSchema: Schema = new Schema({
       'COMMISSION_CLAIM',
       'COMMISSION_EARNED',
       'COMMISSION_WITHDRAWN',
+      'UNCLAIMED_WITHDRAWN',
       'COMPANY_WALLET_WITHDRAWN',
       'VOUCHER_MEMBERSHIP_REDEEM',
+      'MEMBERSHIP_OVERRIDE',
     ],
     required: true,
   },
