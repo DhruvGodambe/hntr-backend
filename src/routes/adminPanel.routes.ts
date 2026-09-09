@@ -35,6 +35,11 @@ router.post(
   requireAdminPrivileged,
   AdminPanelController.recordMembershipOverride,
 );
+router.post(
+  '/users/:username/execute-membership-override',
+  requireAdminPrivileged,
+  AdminPanelController.executeMembershipOverride,
+);
 
 // Transactions & wallets
 router.get('/transactions', AdminPanelController.getTransactions);
