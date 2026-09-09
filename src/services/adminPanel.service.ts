@@ -10,10 +10,10 @@ import AchievementBonus from '../models/AchievementBonus';
 import DisbursementBatch from '../models/DisbursementBatch';
 import { RewardsService } from './rewards.service';
 import { NetworkService } from './network.service';
-import { CompanyWalletService } from './companyWallet.service';
+import { SecurityWalletService } from './securityWallet.service';
 import {
   hntrContract,
-  hntrContractWithCompanySigner,
+  hntrContractWithBurnerSigner,
   getErc20,
   getContractAmountDecimals,
   provider,
@@ -56,9 +56,9 @@ function getTierLadderIndex(tier: string | null | undefined): number {
 
 const TX_TYPE_MAP: Record<string, string[]> = {
   all: [],
-  commissions: ['COMMISSION_EARNED', 'COMMISSION_CLAIM', 'COMMISSION_WITHDRAWN', 'COMPANY_WALLET_WITHDRAWN'],
-  purchases: ['PURCHASE', 'UPGRADE'],
-  withdrawals: ['COMMISSION_WITHDRAWN', 'COMPANY_WALLET_WITHDRAWN', 'COMMISSION_CLAIM'],
+  commissions: ['COMMISSION_EARNED', 'COMMISSION_CLAIM', 'COMMISSION_WITHDRAWN', 'UNCLAIMED_WITHDRAWN'],
+  purchases: ['PURCHASE', 'UPGRADE', 'VOUCHER_MEMBERSHIP_REDEEM', 'MEMBERSHIP_OVERRIDE'],
+  withdrawals: ['COMMISSION_WITHDRAWN', 'UNCLAIMED_WITHDRAWN', 'COMMISSION_CLAIM'],
 };
 
 const ERC20_TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
@@ -161,11 +161,11 @@ export class AdminPanelService {
       thisMonthLockedVolume,
       lastMonthVolume,
       lastMonthLockedVolume,
-      treasuryAddress,
-      leadershipAddress,
-      achievementAddress,
-      poolAddress,
       companyAddress,
+      leadershipAddress,
+      rankAddress,
+      poolAddress,
+      securityAddress,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ tier: { $ne: 'None' } }),
@@ -238,11 +238,11 @@ export class AdminPanelService {
         },
         { $group: { _id: null, total: { $sum: { $ifNull: ['$lockedAmount', 0] } } } },
       ]),
-      hntrContract.treasuryWallet(),
-      hntrContract.leadershipWallet(),
-      hntrContract.achievementWallet(),
-      hntrContract.poolWallet(),
       hntrContract.companyWallet(),
+      hntrContract.leadershipWallet(),
+      hntrContract.rankWallet(),
+      hntrContract.poolWallet(),
+      hntrContract.securityWallet(),
     ]);
 
     // Membership spend + locked commission share (liquid commissions stay under Total Commissions).
@@ -251,26 +251,26 @@ export class AdminPanelService {
     const thisMonthVol = (thisMonthVolume[0]?.total ?? 0) + (thisMonthLockedVolume[0]?.total ?? 0);
     const lastMonthVol = (lastMonthVolume[0]?.total ?? 0) + (lastMonthLockedVolume[0]?.total ?? 0);
 
-    const [treasuryBal, leadershipBal, achievementBal, poolBal, companyBal] = await Promise.all([
-      readWalletStablecoinBalances(String(treasuryAddress)),
-      readWalletStablecoinBalances(String(leadershipAddress)),
-      readWalletStablecoinBalances(String(achievementAddress)),
-      readWalletStablecoinBalances(String(poolAddress)),
+    const [companyBal, leadershipBal, rankBal, poolBal, securityBal] = await Promise.all([
       readWalletStablecoinBalances(String(companyAddress)),
+      readWalletStablecoinBalances(String(leadershipAddress)),
+      readWalletStablecoinBalances(String(rankAddress)),
+      readWalletStablecoinBalances(String(poolAddress)),
+      readWalletStablecoinBalances(String(securityAddress)),
     ]);
 
     const commissionPct =
       totalVolume > 0 ? `${Math.round((totalCommissions / totalVolume) * 100)}% distribution` : '0% distribution';
 
-    const treasuryTotal = treasuryBal.totalUsd;
+    const companyTotal = companyBal.totalUsd;
     const companyCutPct =
-      totalVolume > 0 ? `${Math.round((treasuryTotal / totalVolume) * 100)}% company cut` : '25% company cut';
+      totalVolume > 0 ? `${Math.round((companyTotal / totalVolume) * 100)}% company cut` : '25% company cut';
 
     return {
       totalUsers,
       totalVolume,
       totalCommissions,
-      treasuryBalance: treasuryTotal,
+      companyBalance: companyTotal,
       soldMemberships,
       activePools: await StrategyPool.countDocuments({ status: 'OPEN' }),
       pendingWithdrawals: 0,
@@ -293,18 +293,18 @@ export class AdminPanelService {
           subValue: commissionPct,
         },
         {
-          title: 'Treasury Balance',
-          value: formatMetricUsd(treasuryTotal),
+          title: 'Company Balance',
+          value: formatMetricUsd(companyTotal),
           subValue: companyCutPct,
         },
         { title: 'Sold Memberships', value: soldMemberships, subValue: 'All tiers' },
       ],
       walletSummary: {
-        treasury: { address: String(treasuryAddress).toLowerCase(), ...treasuryBal },
-        leadership: { address: String(leadershipAddress).toLowerCase(), ...leadershipBal },
-        achievement: { address: String(achievementAddress).toLowerCase(), ...achievementBal },
-        pool: { address: String(poolAddress).toLowerCase(), ...poolBal },
         company: { address: String(companyAddress).toLowerCase(), ...companyBal },
+        leadership: { address: String(leadershipAddress).toLowerCase(), ...leadershipBal },
+        rank: { address: String(rankAddress).toLowerCase(), ...rankBal },
+        pool: { address: String(poolAddress).toLowerCase(), ...poolBal },
+        security: { address: String(securityAddress).toLowerCase(), ...securityBal },
       },
     };
   }
@@ -312,7 +312,15 @@ export class AdminPanelService {
   static async getRecentActivity(page: number, limit: number, skip: number) {
     const filter = {
       type: {
-        $in: ['PURCHASE', 'UPGRADE', 'COMMISSION_EARNED', 'COMMISSION_WITHDRAWN', 'COMPANY_WALLET_WITHDRAWN'] as const,
+        $in: [
+          'PURCHASE',
+          'UPGRADE',
+          'VOUCHER_MEMBERSHIP_REDEEM',
+          'MEMBERSHIP_OVERRIDE',
+          'COMMISSION_EARNED',
+          'COMMISSION_WITHDRAWN',
+          'UNCLAIMED_WITHDRAWN',
+        ] as const,
       },
       status: 'CONFIRMED' as const,
     };
@@ -338,9 +346,13 @@ export class AdminPanelService {
             ? 'Membership Purchase'
             : tx.type === 'UPGRADE'
               ? 'Membership Upgrade'
-              : tx.type === 'COMPANY_WALLET_WITHDRAWN'
-                ? 'Admin Withdrawal'
-                : 'Withdrawal',
+              : tx.type === 'VOUCHER_MEMBERSHIP_REDEEM'
+                ? 'Gift Redemption'
+                : tx.type === 'MEMBERSHIP_OVERRIDE'
+                  ? 'Membership Override'
+                  : tx.type === 'UNCLAIMED_WITHDRAWN'
+                    ? 'Admin Withdrawal'
+                    : 'Withdrawal',
       user: userByWallet.get(tx.walletAddress.toLowerCase()) || tx.walletAddress.slice(0, 6) + '...',
       walletAddress: tx.walletAddress,
       amount: tx.amount,
@@ -401,6 +413,10 @@ export class AdminPanelService {
         isBlocked,
         isForcedRank: Boolean(u.isForcedRank) || Boolean(override?.rankOverride),
         isForcedMembership: Boolean(u.isForcedMembership) || Boolean(override?.tierOverride),
+        // A gift-code redemption reuses the forced-membership lifecycle internally
+        // (see User.isVoucherMembership doc comment) but is not an admin override —
+        // the UI uses this to show "Gift" instead of "Forced" for those accounts.
+        isVoucherMembership: Boolean(u.isVoucherMembership),
         joinedAt: u.joinedAt,
         actualTier: u.tier,
         actualRank: u.rank,
@@ -667,10 +683,10 @@ export class AdminPanelService {
   }
 
   /**
-   * Executes `overrideMembershipTier` on-chain using the backend company-wallet
+   * Executes `overrideMembershipTier` on-chain using the backend burner-wallet
    * signer, then persists the Mongo tier + forced-membership flags via
    * recordMembershipOverride. Lets the admin panel force a tier without connecting
-   * the company wallet in the browser. Requires COMPANY_WALLET_PRIVATE_KEY.
+   * a wallet in the browser. Requires BURNER_WALLET_PRIVATE_KEY.
    */
   static async executeMembershipOverride(params: { username: string; tier: string }) {
     const { username, tier } = params;
@@ -683,10 +699,10 @@ export class AdminPanelService {
       );
     }
 
-    if (!hntrContractWithCompanySigner) {
+    if (!hntrContractWithBurnerSigner) {
       throw new AdminPanelError(
-        'COMPANY_SIGNER_NOT_CONFIGURED',
-        'COMPANY_WALLET_PRIVATE_KEY is not configured in the backend. Connect the company wallet in the admin UI instead.',
+        'BURNER_SIGNER_NOT_CONFIGURED',
+        'BURNER_WALLET_PRIVATE_KEY is not configured in the backend.',
         503,
       );
     }
@@ -710,7 +726,7 @@ export class AdminPanelService {
       );
     }
 
-    const tx = await (hntrContractWithCompanySigner as any).overrideMembershipTier(wallet, requestedIdx);
+    const tx = await (hntrContractWithBurnerSigner as any).overrideMembershipTier(wallet, requestedIdx);
     logger.info(`Membership override submitted for ${username} (${wallet}) -> ${tier}: ${tx.hash}`);
     await tx.wait();
 
@@ -779,20 +795,20 @@ export class AdminPanelService {
   }
 
   static async getWalletBalances() {
-    const [treasury, leadership, achievement, pool, company] = await Promise.all([
-      hntrContract.treasuryWallet(),
-      hntrContract.leadershipWallet(),
-      hntrContract.achievementWallet(),
-      hntrContract.poolWallet(),
+    const [company, leadership, rank, pool, security] = await Promise.all([
       hntrContract.companyWallet(),
+      hntrContract.leadershipWallet(),
+      hntrContract.rankWallet(),
+      hntrContract.poolWallet(),
+      hntrContract.securityWallet(),
     ]);
 
     const wallets = [
-      { name: 'Achievement Wallet', key: 'achievement', address: String(achievement) },
-      { name: 'Leadership Wallet', key: 'leadership', address: String(leadership) },
-      { name: 'Pool Wallet', key: 'pool', address: String(pool) },
       { name: 'Company Wallet', key: 'company', address: String(company) },
-      { name: 'Treasury Wallet', key: 'treasury', address: String(treasury) },
+      { name: 'Leadership Wallet', key: 'leadership', address: String(leadership) },
+      { name: 'Rank Wallet', key: 'rank', address: String(rank) },
+      { name: 'Pool Wallet', key: 'pool', address: String(pool) },
+      { name: 'Security Wallet', key: 'security', address: String(security) },
     ];
 
     const items = await Promise.all(
@@ -814,17 +830,17 @@ export class AdminPanelService {
   }
 
   static async getWalletLedger(walletKey: string, page: number, limit: number, skip: number) {
-    const validKeys = ['treasury', 'leadership', 'achievement', 'pool', 'company'] as const;
+    const validKeys = ['company', 'leadership', 'rank', 'pool', 'security'] as const;
     if (!validKeys.includes(walletKey as (typeof validKeys)[number])) {
       throw new AdminPanelError('INVALID_WALLET', 'Unknown wallet key.');
     }
 
     const addressMap: Record<(typeof validKeys)[number], () => Promise<string>> = {
-      treasury: () => hntrContract.treasuryWallet(),
-      leadership: () => hntrContract.leadershipWallet(),
-      achievement: () => hntrContract.achievementWallet(),
-      pool: () => hntrContract.poolWallet(),
       company: () => hntrContract.companyWallet(),
+      leadership: () => hntrContract.leadershipWallet(),
+      rank: () => hntrContract.rankWallet(),
+      pool: () => hntrContract.poolWallet(),
+      security: () => hntrContract.securityWallet(),
     };
 
     const walletAddress = ethers.getAddress(String(await addressMap[walletKey as (typeof validKeys)[number]]()));
@@ -1022,6 +1038,16 @@ export class AdminPanelService {
       USDT: health.protocolTokens.find((t) => t.symbol === 'USDT')?.balance ?? 0,
       USDC: health.protocolTokens.find((t) => t.symbol === 'USDC')?.balance ?? 0,
     };
+    const burnerHas = {
+      USDT: health.burnerTokens.find((t) => t.symbol === 'USDT')?.balance ?? 0,
+      USDC: health.burnerTokens.find((t) => t.symbol === 'USDC')?.balance ?? 0,
+    };
+    // The whole leadership pool is distributed. Move USDT first, then USDC for the
+    // rest — only top up what the burner is missing.
+    const fundToBurner = {
+      USDT: Math.max(0, Number((fundTotals.USDT - burnerHas.USDT).toFixed(6))),
+      USDC: Math.max(0, Number((fundTotals.USDC - burnerHas.USDC).toFixed(6))),
+    };
 
     return {
       poolBalanceUSD: balances.totalUsd,
@@ -1033,6 +1059,9 @@ export class AdminPanelService {
       totalShares,
       month,
       fundTotals,
+      burnerHas,
+      fundToBurner,
+      fundFromWallet: String(leadershipWallet).toLowerCase(),
       hopNote: health.hopNote,
       protocolEth: health.protocolEth,
       burnerEth: health.burnerEth,
@@ -1053,9 +1082,9 @@ export class AdminPanelService {
   }
 
   static async getAchievementPreview() {
-    const achievementWallet = await hntrContract.achievementWallet();
-    const balances = await readWalletStablecoinBalances(String(achievementWallet));
-    const health = await RewardsService.getDisbursementWalletHealth(String(achievementWallet));
+    const rankWallet = await hntrContract.rankWallet();
+    const balances = await readWalletStablecoinBalances(String(rankWallet));
+    const health = await RewardsService.getDisbursementWalletHealth(String(rankWallet));
 
     const pending = await AchievementBonus.find({ status: 'PENDING' })
       .sort({ createdAt: 1 })
@@ -1063,17 +1092,35 @@ export class AdminPanelService {
     const pendingReviewCount = await AchievementBonus.countDocuments({ status: 'PENDING_REVIEW' });
     const totalPendingUSD = pending.reduce((sum, b) => sum + (b.amountUSD || 0), 0);
 
-    const lastBatch = await DisbursementBatch.findOne({ type: 'ACHIEVEMENT' })
+    const lastBatch = await DisbursementBatch.findOne({ type: { $in: ['RANK', 'ACHIEVEMENT'] } })
       .sort({ createdAt: -1 })
       .lean();
+
+    const rankHas = {
+      USDT: health.protocolTokens.find((t) => t.symbol === 'USDT')?.balance ?? 0,
+      USDC: health.protocolTokens.find((t) => t.symbol === 'USDC')?.balance ?? 0,
+    };
+    const burnerHas = {
+      USDT: health.burnerTokens.find((t) => t.symbol === 'USDT')?.balance ?? 0,
+      USDC: health.burnerTokens.find((t) => t.symbol === 'USDC')?.balance ?? 0,
+    };
+    // Burner needs `totalPendingUSD`. Cover the shortfall from the rank wallet —
+    // USDT first, then USDC for whatever USDT can't cover.
+    const need = Math.max(0, Number((totalPendingUSD - burnerHas.USDT - burnerHas.USDC).toFixed(6)));
+    const fundUsdt = Math.min(need, rankHas.USDT);
+    const fundUsdc = Math.max(0, Number((need - fundUsdt).toFixed(6)));
+    const fundToBurner = { USDT: Number(fundUsdt.toFixed(6)), USDC: fundUsdc };
 
     return {
       poolBalanceUSD: balances.totalUsd,
       poolTokens: balances.tokens,
-      achievementWallet: String(achievementWallet).toLowerCase(),
+      rankWallet: String(rankWallet).toLowerCase(),
       pendingCount: pending.length,
       pendingReviewCount,
       totalPendingUSD: Number(totalPendingUSD.toFixed(2)),
+      burnerHas,
+      fundToBurner,
+      fundFromWallet: String(rankWallet).toLowerCase(),
       pendingBonuses: pending.map((b) => ({
         id: String(b._id),
         username: b.username,
@@ -1139,22 +1186,20 @@ export class AdminPanelService {
 
   static async getOverdueCommissions(token = 'USDT') {
     try {
-      return await CompanyWalletService.getOverdueWallets(token);
+      return await SecurityWalletService.getUnclaimedWallets(token);
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('not configured')) {
-        return { token, tokenAddress: '', overdue: [], count: 0, configured: false, companyWallet: '' };
+        return { token, tokenAddress: '', overdue: [], count: 0, configured: false, securityWallet: '' };
       }
       throw err;
     }
   }
 
-  static async getCompanyWalletInfo() {
-    const address = await CompanyWalletService.getCompanyWalletAddress();
-    return {
-      address,
-      // Backend private key is optional now — admin UI signs withdraws via ConnectKit.
-      backendSignerConfigured: Boolean(ENV.COMPANY_WALLET_PRIVATE_KEY),
-    };
+  static async getSecurityWalletInfo() {
+    // No backend key — the admin connects the security wallet in the UI and signs
+    // withdrawUnclaimed via ConnectKit.
+    const address = await SecurityWalletService.getSecurityWalletAddress();
+    return { address };
   }
 
   static async getOverdueCommissionsWithAmounts(
@@ -1234,34 +1279,12 @@ export class AdminPanelService {
     };
   }
 
-  static async claimCommissionsForWallets(walletAddresses: string[], token = 'USDT') {
-    const results = [];
-    for (const wallet of walletAddresses) {
-      try {
-        const result = await CompanyWalletService.withdrawForUser(wallet, token);
-        await this.recordCompanyWalletWithdraw({
-          walletAddress: wallet,
-          token,
-          txHash: result.txHash,
-          amount: result.amount,
-        });
-        results.push({ walletAddress: wallet, success: true, ...result });
-      } catch (err: unknown) {
-        results.push({
-          walletAddress: wallet,
-          success: false,
-          error: err instanceof Error ? err.message : 'Withdrawal failed',
-        });
-      }
-    }
-    return results;
-  }
 
   /**
-   * Persists an admin company-wallet commission withdrawal as COMPANY_WALLET_WITHDRAWN.
-   * Used after ConnectKit-signed withdrawCompanyWallet txs (and backend signer path).
+   * Persists an admin unclaimed-commission sweep as UNCLAIMED_WITHDRAWN.
+   * Used after ConnectKit-signed withdrawUnclaimed txs (and backend signer path).
    */
-  static async recordCompanyWalletWithdraw(params: {
+  static async recordUnclaimedWithdraw(params: {
     walletAddress: string;
     token: string;
     txHash: string;
@@ -1289,7 +1312,7 @@ export class AdminPanelService {
     const existing = await Transaction.findOne({
       txHash,
       walletAddress,
-      type: 'COMPANY_WALLET_WITHDRAWN',
+      type: 'UNCLAIMED_WITHDRAWN',
       token,
     });
     if (existing) {
@@ -1299,7 +1322,7 @@ export class AdminPanelService {
         txHash,
         token,
         amount: existing.amount,
-        type: 'COMPANY_WALLET_WITHDRAWN' as const,
+        type: 'UNCLAIMED_WITHDRAWN' as const,
         status: existing.status,
         duplicate: true,
       };
@@ -1308,7 +1331,7 @@ export class AdminPanelService {
     const created = await Transaction.create({
       txHash,
       walletAddress,
-      type: 'COMPANY_WALLET_WITHDRAWN',
+      type: 'UNCLAIMED_WITHDRAWN',
       token,
       amount: Number(params.amount.toFixed(6)),
       status: 'CONFIRMED',
@@ -1316,7 +1339,7 @@ export class AdminPanelService {
     });
 
     logger.info(
-      `Recorded COMPANY_WALLET_WITHDRAWN for ${walletAddress}: -$${params.amount.toFixed(2)} tx=${txHash}`,
+      `Recorded UNCLAIMED_WITHDRAWN for ${walletAddress}: -$${params.amount.toFixed(2)} tx=${txHash}`,
     );
 
     return {
@@ -1325,7 +1348,7 @@ export class AdminPanelService {
       txHash,
       token,
       amount: created.amount,
-      type: 'COMPANY_WALLET_WITHDRAWN' as const,
+      type: 'UNCLAIMED_WITHDRAWN' as const,
       status: 'CONFIRMED' as const,
       duplicate: false,
     };

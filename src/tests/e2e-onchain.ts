@@ -72,7 +72,7 @@ async function runOnChainE2E() {
   const contractAddress = await hntrContract.getAddress();
   console.log(`✅ HNTRMembership deployed at: ${contractAddress}`);
 
-  // Set the 4 wallets (using deployer for treasury/leadership/achievement and a dedicated signer for pool)
+  // Set the 4 wallets (using deployer for company/leadership/rank and a dedicated signer for pool)
   await (hntrContract as any).setWallets(
     deployer.address,
     deployer.address,

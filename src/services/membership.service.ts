@@ -6,7 +6,7 @@ import {
   hntrContract,
   getErc20,
   CONTRACT_ADDRESS,
-  companyWallet,
+  burnerWallet,
   SIGNATURE_TTL_SECONDS,
   provider,
   getContractAmountDecimals,
@@ -200,10 +200,10 @@ export class MembershipService {
     deadline: number;
     operation: 'PURCHASE' | 'UPGRADE';
   }): Promise<string> {
-    if (!companyWallet) {
+    if (!burnerWallet) {
       throw new MembershipError(
-        'COMPANY_WALLET_NOT_CONFIGURED',
-        'Server cannot authorize membership purchases (COMPANY_WALLET_PRIVATE_KEY missing).',
+        'BURNER_NOT_CONFIGURED',
+        'Server cannot authorize membership purchases (BURNER_WALLET_PRIVATE_KEY missing).',
         503,
       );
     }
@@ -261,7 +261,7 @@ export class MembershipService {
       operation: params.operation === 'PURCHASE' ? PURCHASE_OP : UPGRADE_OP,
     };
 
-    return companyWallet.signTypedData(domain, types, value);
+    return burnerWallet.signTypedData(domain, types, value);
   }
 
   private static async prepareAuth(

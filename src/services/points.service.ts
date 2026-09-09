@@ -7,6 +7,11 @@ import { logger } from '../utils/logger';
 const MULTIPLIERS: Record<PointsSource, number> = {
   MEMBERSHIP_PURCHASE: 250,
   MEMBERSHIP_UPGRADE: 250,
+  // Same rate as a paid purchase/upgrade — the member still receives the tier's
+  // full face value, just paid for by the voucher issuer / an admin grant instead
+  // of the member themselves.
+  MEMBERSHIP_VOUCHER_REDEEM: 250,
+  MEMBERSHIP_OVERRIDE: 250,
   COMMISSION_EARNED: 10,
   POOL_DEPOSIT: 15,
 };
@@ -161,10 +166,21 @@ export class PointsService {
       for (const record of records) {
         let entry: DesiredEntry | null = null;
 
-        if (record.type === 'PURCHASE' || record.type === 'UPGRADE') {
+        if (
+          record.type === 'PURCHASE' ||
+          record.type === 'UPGRADE' ||
+          record.type === 'VOUCHER_MEMBERSHIP_REDEEM' ||
+          record.type === 'MEMBERSHIP_OVERRIDE'
+        ) {
           if (!record.txHash) continue;
           const source: PointsSource =
-            record.type === 'PURCHASE' ? 'MEMBERSHIP_PURCHASE' : 'MEMBERSHIP_UPGRADE';
+            record.type === 'PURCHASE'
+              ? 'MEMBERSHIP_PURCHASE'
+              : record.type === 'UPGRADE'
+                ? 'MEMBERSHIP_UPGRADE'
+                : record.type === 'VOUCHER_MEMBERSHIP_REDEEM'
+                  ? 'MEMBERSHIP_VOUCHER_REDEEM'
+                  : 'MEMBERSHIP_OVERRIDE';
           const usdValue = record.amount || 0;
           const amount = Math.round(usdValue * MULTIPLIERS[source]);
           if (amount <= 0) continue;

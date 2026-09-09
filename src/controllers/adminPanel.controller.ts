@@ -366,48 +366,29 @@ export class AdminPanelController {
     }
   }
 
-  static async getCompanyWallet(req: Request, res: Response, next: NextFunction): Promise<void> {
+  static async getSecurityWallet(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const data = await AdminPanelService.getCompanyWalletInfo();
-      sendSuccess(res, data, 'Company wallet address retrieved');
+      const data = await AdminPanelService.getSecurityWalletInfo();
+      sendSuccess(res, data, 'Security wallet address retrieved');
     } catch (error) {
       handlePanelError(error, res, next);
     }
   }
 
-  static async claimCommissions(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const { walletAddresses, token } = req.body || {};
-      if (!Array.isArray(walletAddresses) || walletAddresses.length === 0) {
-        sendError(res, 'walletAddresses array is required.', 400);
-        return;
-      }
-      if (walletAddresses.length > 50) {
-        sendError(res, 'Cannot process more than 50 wallets at once.', 400);
-        return;
-      }
-      const data = await AdminPanelService.claimCommissionsForWallets(walletAddresses, token || 'USDT');
-      const succeeded = data.filter((r) => r.success).length;
-      sendSuccess(res, { results: data, succeeded, failed: data.length - succeeded }, 'Commission claims processed');
-    } catch (error) {
-      handlePanelError(error, res, next);
-    }
-  }
-
-  static async recordCompanyWithdraw(req: Request, res: Response, next: NextFunction): Promise<void> {
+  static async recordSecurityWithdraw(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { walletAddress, token, txHash, amount } = req.body || {};
       if (!walletAddress || !txHash) {
         sendError(res, 'walletAddress and txHash are required.', 400);
         return;
       }
-      const data = await AdminPanelService.recordCompanyWalletWithdraw({
+      const data = await AdminPanelService.recordUnclaimedWithdraw({
         walletAddress: String(walletAddress),
         token: typeof token === 'string' ? token : 'USDT',
         txHash: String(txHash),
         amount: Number(amount),
       });
-      sendSuccess(res, data, 'Admin company withdrawal recorded');
+      sendSuccess(res, data, 'Admin unclaimed sweep recorded');
     } catch (error) {
       handlePanelError(error, res, next);
     }

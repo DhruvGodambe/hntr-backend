@@ -82,7 +82,7 @@ export class BlockchainService {
     ethers.id('MembershipUpgraded(address,uint8,uint8,uint256,address)'),
     ethers.id('CommissionEarned(address,uint256,uint256,uint8,address)'),
     ethers.id('CommissionWithdrawn(address,uint256,address)'),
-    ethers.id('CompanyWalletWithdrawn(address,address,uint256,address)'),
+    ethers.id('UnclaimedWithdrawn(address,address,uint256,address)'),
     ethers.id('MembershipTierOverriden(address,uint8,uint256)'),
     ethers.id('VoucherRedeemed(address,bytes32,uint8,uint8,uint256)'),
   ];
@@ -219,14 +219,14 @@ export class BlockchainService {
       const [user, amount, token] = parsed.args;
       logger.info(`CommissionWithdrawn event detected for ${user}: token ${token}`);
       await this.handleCommissionWithdrawn(user, BigInt(amount.toString()), token, txHash);
-    } else if (parsed.name === 'CompanyWalletWithdrawn') {
-      const [user, token, amount, companyWallet] = parsed.args;
-      logger.info(`CompanyWalletWithdrawn event detected for ${user}: token ${token}, amount ${amount}`);
-      await this.handleCompanyWalletWithdrawn(
+    } else if (parsed.name === 'UnclaimedWithdrawn') {
+      const [user, token, amount, caller] = parsed.args;
+      logger.info(`UnclaimedWithdrawn event detected for ${user}: token ${token}, amount ${amount}`);
+      await this.handleUnclaimedWithdrawn(
         user,
         BigInt(amount.toString()),
         token,
-        companyWallet,
+        caller,
         txHash,
       );
     } else if (parsed.name === 'MembershipTierOverriden') {
@@ -611,11 +611,23 @@ export class BlockchainService {
     }
 
     // Recalculate upline volumes immediately (the 10-min cron would also catch it).
-    // No points are awarded — nothing was paid.
     try {
       await NetworkService.recalculateUplineVolumes(user.username);
     } catch (err: any) {
       logger.error(`VoucherRedeemed: volume recalc failed for ${user.username}: ${err.message}`);
+    }
+
+    // No payment moved, but the member still receives the full HNTR-points value of
+    // the tier they were granted — same rate as a paid purchase (see points.service.ts).
+    try {
+      await PointsService.awardPoints(
+        normalizedWallet,
+        'MEMBERSHIP_VOUCHER_REDEEM',
+        amountUsd,
+        normalizedHash,
+      );
+    } catch (pointsErr: any) {
+      logger.error(`Failed to award points for voucher redemption ${normalizedHash}: ${pointsErr.message}`);
     }
 
     await NotificationService.createQuiet({
@@ -639,6 +651,7 @@ export class BlockchainService {
   ) {
     const tierStr = this.getTierString(tierIndex);
     const normalizedWallet = walletAddress.toLowerCase();
+    const normalizedHash = txHash.toLowerCase();
     const user = await User.findOne({ walletAddress: normalizedWallet });
     if (!user) {
       logger.warn(`MembershipTierOverriden: user not found for ${walletAddress}`);
@@ -655,6 +668,47 @@ export class BlockchainService {
       { $set: { tierOverride: tierStr } },
       { upsert: true },
     );
+
+    // Log it as its own transaction type (not a purchase, not a commission) so the
+    // admin/member transaction lists show "Membership Override" rather than
+    // mislabeling it, and so it has a row to attach an HNTR-points award to.
+    const amountUsd = TIER_VOLUMES[tierStr as Tier] ?? 0;
+    try {
+      const existing = await Transaction.findOne({
+        txHash: normalizedHash,
+        walletAddress: normalizedWallet,
+        type: 'MEMBERSHIP_OVERRIDE',
+      });
+      if (!existing) {
+        await Transaction.create({
+          txHash: normalizedHash,
+          walletAddress: normalizedWallet,
+          type: 'MEMBERSHIP_OVERRIDE',
+          tier: tierStr,
+          amount: amountUsd,
+          status: 'CONFIRMED',
+          timestamp: new Date(),
+        });
+      }
+    } catch (err: any) {
+      if (!isDuplicateKeyError(err)) {
+        logger.error(`Failed to record MEMBERSHIP_OVERRIDE transaction for ${user.username}: ${err.message}`);
+      }
+    }
+
+    // No payment moved, but the member still receives the full HNTR-points value of
+    // the tier they were granted — same rate as a paid purchase.
+    try {
+      await PointsService.awardPoints(normalizedWallet, 'MEMBERSHIP_OVERRIDE', amountUsd, normalizedHash);
+    } catch (pointsErr: any) {
+      logger.error(`Failed to award points for membership override ${normalizedHash}: ${pointsErr.message}`);
+    }
+
+    try {
+      await NetworkService.recalculateUplineVolumes(user.username);
+    } catch (err: any) {
+      logger.error(`MembershipTierOverriden: volume recalc failed for ${user.username}: ${err.message}`);
+    }
 
     logger.info(
       `Forced membership for ${user.username}: ${previousTier} -> ${tierStr} (tx=${txHash})`,
@@ -810,17 +864,17 @@ export class BlockchainService {
     amount: number;
     tokenAddress: string;
     txHash: string;
-    source?: 'user' | 'company_wallet';
-    companyWallet?: string;
+    source?: 'user' | 'security_wallet';
+    securityWallet?: string;
   }) {
     const symbol = this.resolveStableTokenSymbol(params.tokenAddress);
-    const isAdmin = params.source === 'company_wallet';
+    const isAdmin = params.source === 'security_wallet';
     await NotificationService.createQuiet({
       walletAddress: params.walletAddress,
       type: 'COMMISSION_CLAIMED',
       title: isAdmin ? 'Commissions withdrawn (admin)' : 'Referral commission claimed',
       sub: isAdmin
-        ? `$${params.amount.toFixed(2)} ${symbol} sent to your wallet by the company wallet.`
+        ? `$${params.amount.toFixed(2)} ${symbol} swept to your wallet by the security wallet.`
         : `$${params.amount.toFixed(2)} ${symbol} sent to your wallet.`,
       link: 'VIEW TRANSACTION',
       meta: {
@@ -828,7 +882,7 @@ export class BlockchainService {
         txHash: params.txHash,
         token: params.tokenAddress,
         tokenSymbol: symbol,
-        ...(params.companyWallet ? { companyWallet: params.companyWallet } : {}),
+        ...(params.securityWallet ? { securityWallet: params.securityWallet } : {}),
         ...(params.source ? { source: params.source } : {}),
       },
     });
@@ -933,11 +987,11 @@ export class BlockchainService {
     logger.info(`Stored COMMISSION_WITHDRAWN for ${walletAddress}: -$${withdrawn.toFixed(2)}`);
   }
 
-  private async handleCompanyWalletWithdrawn(
+  private async handleUnclaimedWithdrawn(
     walletAddress: string,
     amount: bigint,
     tokenAddress: string,
-    companyWalletAddress: string,
+    callerAddress: string,
     txHash: string,
   ) {
     const amountDecimals = await getContractAmountDecimals();
@@ -949,11 +1003,11 @@ export class BlockchainService {
     const existing = await Transaction.findOne({
       txHash: normalizedHash,
       walletAddress: normalizedWallet,
-      type: 'COMPANY_WALLET_WITHDRAWN',
+      type: 'UNCLAIMED_WITHDRAWN',
       token: normalizedToken,
     });
     if (existing) {
-      logger.info(`Duplicate CompanyWalletWithdrawn tx skipped: ${normalizedHash}`);
+      logger.info(`Duplicate UnclaimedWithdrawn tx skipped: ${normalizedHash}`);
       return;
     }
 
@@ -961,7 +1015,7 @@ export class BlockchainService {
       await Transaction.create({
         txHash: normalizedHash,
         walletAddress: normalizedWallet,
-        type: 'COMPANY_WALLET_WITHDRAWN',
+        type: 'UNCLAIMED_WITHDRAWN',
         token: normalizedToken,
         amount: withdrawn,
         status: 'CONFIRMED',
@@ -969,7 +1023,7 @@ export class BlockchainService {
       });
     } catch (err: any) {
       if (isDuplicateKeyError(err)) {
-        logger.info(`Race-created CompanyWalletWithdrawn already exists: ${normalizedHash}`);
+        logger.info(`Race-created UnclaimedWithdrawn already exists: ${normalizedHash}`);
         return;
       }
       throw err;
@@ -980,12 +1034,12 @@ export class BlockchainService {
       amount: withdrawn,
       tokenAddress: normalizedToken,
       txHash: normalizedHash,
-      source: 'company_wallet',
-      companyWallet: companyWalletAddress.toLowerCase(),
+      source: 'security_wallet',
+      securityWallet: callerAddress.toLowerCase(),
     });
 
     logger.info(
-      `Stored COMPANY_WALLET_WITHDRAWN for ${walletAddress}: -$${withdrawn.toFixed(2)} (companyWallet ${companyWalletAddress})`,
+      `Stored UNCLAIMED_WITHDRAWN for ${walletAddress}: -$${withdrawn.toFixed(2)} (securityWallet ${callerAddress})`,
     );
   }
 

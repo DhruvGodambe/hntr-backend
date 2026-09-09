@@ -23,7 +23,7 @@ async function runFullCommissionFlow() {
   const privateKey = process.env.PRIVATE_KEY;
   const mockUSDTAddress = "0xEC4ca582619E79FdedC4bc23948d7d7856b6750e";
 
-  const TREASURY = "0x284E6b41dB482d9edE9449Bbda1198d95464B23D";
+  const COMPANY = "0x284E6b41dB482d9edE9449Bbda1198d95464B23D";
 
   // Dynamically generate a Leadership Wallet so we can test the cron job payouts
   const leadershipWallet = ethers.Wallet.createRandom().connect(provider);
@@ -32,7 +32,7 @@ async function runFullCommissionFlow() {
   // Pool wallet receives the locked portion of commissions.
   const POOL_WALLET = process.env.POOL_WALLET || ethers.Wallet.createRandom().address;
   
-  const ACHIEVEMENT = "0x3D6D1BffaDd3a71baDdC3E6468ed144f0F4B975b";
+  const RANK = "0x3D6D1BffaDd3a71baDdC3E6468ed144f0F4B975b";
 
   if (!privateKey) {
     console.error("❌ PRIVATE_KEY not found in .env!");
@@ -80,7 +80,7 @@ async function runFullCommissionFlow() {
   console.log("\n--- CONFIGURING PROTOCOL WALLETS ---");
   const liveHntrContract = hntrContract.connect(ownerWallet) as ethers.Contract;
   try {
-    const setTx = await liveHntrContract.setWallets(TREASURY, LEADERSHIP, ACHIEVEMENT, POOL_WALLET);
+    const setTx = await liveHntrContract.setWallets(COMPANY, LEADERSHIP, RANK, POOL_WALLET);
     await setTx.wait();
     console.log(`✅ Protocol Wallets successfully configured! (pool: ${POOL_WALLET})`);
   } catch (e: any) {
@@ -125,7 +125,7 @@ async function runFullCommissionFlow() {
   console.log("\n--- EXECUTING BUYER PURCHASE (TESTING COMMISSIONS) ---");
   
   // Snapshots
-  const tBalInit = await usdtContract.balanceOf(TREASURY);
+  const tBalInit = await usdtContract.balanceOf(COMPANY);
   const ownerLiquidInit = await liveHntrContract.withdrawableCommissions(ownerWallet.address, mockUSDTAddress);
   const uplineLiquidInit = await liveHntrContract.withdrawableCommissions(uplineWallet.address, mockUSDTAddress);
 
@@ -147,7 +147,7 @@ async function runFullCommissionFlow() {
   const uplineLiquidFinal = await liveHntrContract.withdrawableCommissions(uplineWallet.address, mockUSDTAddress);
   const uplineLockedFinal = await liveHntrContract.lockedCommissions(uplineWallet.address, mockUSDTAddress);
 
-  const tBalFinal = await usdtContract.balanceOf(TREASURY);
+  const tBalFinal = await usdtContract.balanceOf(COMPANY);
 
   // Buyer paid $250.
   // Level 1 Upline: 15% = $37.50 (Liquid 80%: $30, Locked 20%: $7.50)
@@ -208,7 +208,7 @@ async function runFullCommissionFlow() {
   }
   
   // 7.5 Test Rank Evaluation and Achievement Bonus Report
-  console.log("\n--- TESTING RANK EVALUATION & ACHIEVEMENT REPORT ---");
+  console.log("\n--- TESTING RANK EVALUATION & RANK REPORT ---");
   const { NetworkService } = await import('../services/network.service');
   const { RewardsService: RS } = await import('../services/rewards.service');
 

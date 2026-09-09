@@ -13,16 +13,13 @@ import { hntrContract, provider, getErc20, getContractAmountDecimals } from '../
 async function main() {
   await connectDB();
 
-  const [achievementWallet, usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
-    hntrContract.achievementWallet(),
+  const [achievementWallet, burnerAddr, usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
+    hntrContract.rankWallet(),
+    hntrContract.burnerWallet(),
     hntrContract.usdt(),
     hntrContract.usdc(),
     getContractAmountDecimals(),
   ]);
-
-  const keyAddr = ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY
-    ? new ethers.Wallet(ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY).address.toLowerCase()
-    : null;
 
   const usdt = getErc20(String(usdtAddress));
   const usdc = getErc20(String(usdcAddress));
@@ -41,10 +38,9 @@ async function main() {
       {
         cronSchedule: '30 0 * * * (00:30 UTC daily ≈ 06:00 IST)',
         note: 'node-cron does NOT backfill missed runs — backend must be running at that time',
-        achievementWallet: String(achievementWallet).toLowerCase(),
-        envKeyConfigured: Boolean(ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY),
-        envKeyAddress: keyAddr,
-        keyMatchesOnChain: keyAddr === String(achievementWallet).toLowerCase(),
+        rankWallet: String(achievementWallet).toLowerCase(),
+        burnerWallet: String(burnerAddr).toLowerCase(),
+        fundingNote: 'admin connects the rank wallet and transfers USDT/USDC to the burner before Distribute',
         amountDecimals,
         balances: {
           USDT: Number(ethers.formatUnits(usdtRaw, amountDecimals)),

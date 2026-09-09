@@ -34,6 +34,14 @@ export interface IVoucher extends Document {
   status: VoucherStatus;
   note?: string;
 
+  /**
+   * Bearer code: whoever redeems it first gets it, no matter how many people it
+   * was sent to. Tracked so re-sharing the same recipient set is idempotent (no
+   * duplicate notifications) and so the other recipients can be told the code is
+   * gone once someone redeems it.
+   */
+  sharedWith: { username: string; walletAddress: string; notifiedAt: Date }[];
+
   expiresAt: Date;
 
   /** Set when status flips to REDEEMING; cleared/stale-swept by the cron. */
@@ -83,6 +91,18 @@ const VoucherSchema: Schema = new Schema(
       default: 'ACTIVE',
     },
     note: { type: String, maxlength: 64 },
+
+    sharedWith: {
+      type: [
+        {
+          username: { type: String, required: true },
+          walletAddress: { type: String, required: true, lowercase: true },
+          notifiedAt: { type: Date, required: true },
+        },
+      ],
+      default: [],
+      _id: false,
+    },
 
     expiresAt: { type: Date, required: true },
 

@@ -217,8 +217,16 @@ export class VoucherService {
     const plaintext = code.decrypt(v.codeCipher);
     const url = code.redeemUrl(plaintext);
 
+    // Bearer code: it can be sent to several people, but only whoever redeems it
+    // first actually gets the membership. Track who has already been notified so
+    // re-sharing the same recipient set is idempotent instead of spamming them
+    // with duplicate "you got a gift code" notifications.
+    const alreadyNotified = new Set((v.sharedWith || []).map((s) => s.username.toLowerCase()));
+    const firstTimeInThisBatch = list.length > 1;
+
     const notified: string[] = [];
     const skipped: { username: string; reason: string }[] = [];
+    const newlyShared: { username: string; walletAddress: string; notifiedAt: Date }[] = [];
     for (const uname of list) {
       const target = await UserService.getUserByUsername(uname);
       if (!target?.walletAddress) {
@@ -229,16 +237,28 @@ export class VoucherService {
         skipped.push({ username: target.username, reason: 'cannot share with yourself' });
         continue;
       }
+      if (alreadyNotified.has(target.username.toLowerCase())) {
+        skipped.push({ username: target.username, reason: 'already notified' });
+        continue;
+      }
       await NotificationService.createQuiet({
         walletAddress: target.walletAddress,
         type: 'VOUCHER_RECEIVED',
         title: `${v.tier} membership gift code`,
-        sub: `${v.issuerUsername} sent you a ${v.tier} membership voucher. Redeem it before it expires.`,
+        sub: firstTimeInThisBatch
+          ? `${v.issuerUsername} sent you a ${v.tier} membership voucher (also sent to others — first to redeem gets it). Redeem it before it expires.`
+          : `${v.issuerUsername} sent you a ${v.tier} membership voucher. Redeem it before it expires — this code can only be redeemed once.`,
         link: 'REDEEM NOW',
         meta: { voucherId, tier: v.tier, redeemUrl: url, from: v.issuerUsername, expiresAt: v.expiresAt },
       });
       notified.push(target.username);
+      newlyShared.push({ username: target.username, walletAddress: target.walletAddress.toLowerCase(), notifiedAt: new Date() });
     }
+
+    if (newlyShared.length > 0) {
+      await Voucher.updateOne({ voucherId }, { $push: { sharedWith: { $each: newlyShared } } });
+    }
+
     return { notified, skipped };
   }
 
@@ -408,6 +428,22 @@ export class VoucherService {
       link: 'VIEW GIFT CODES',
       meta: { voucherId: claimed.voucherId, tier: claimed.tier, redeemer: user.username, txHash },
     });
+
+    // If this bearer code was shared with other people too, tell them it's gone —
+    // otherwise they're left holding a notification for a code that will now just
+    // fail with ALREADY_REDEEMED if they try it.
+    const otherRecipients = (claimed.sharedWith || []).filter(
+      (s) => s.walletAddress.toLowerCase() !== wallet,
+    );
+    for (const recipient of otherRecipients) {
+      await NotificationService.createQuiet({
+        walletAddress: recipient.walletAddress,
+        type: 'VOUCHER_CLAIMED_BY_OTHER',
+        title: 'Gift code no longer available',
+        sub: `The ${claimed.tier} membership voucher from ${claimed.issuerUsername} was redeemed by someone else.`,
+        meta: { voucherId: claimed.voucherId, tier: claimed.tier, redeemedBy: user.username },
+      });
+    }
 
     return {
       voucherId: claimed.voucherId,

@@ -3,7 +3,7 @@ import User from '../models/User';
 import Transaction from '../models/Transaction';
 import { RewardsService } from '../services/rewards.service';
 import { NetworkService } from '../services/network.service';
-import { CompanyWalletService } from '../services/companyWallet.service';
+import { SecurityWalletService } from '../services/securityWallet.service';
 import { runMonthlyLeadershipPayout, runAchievementBonusDisbursement } from '../jobs/leadership-cron';
 import { sendSuccess } from '../utils/response';
 
@@ -81,24 +81,24 @@ export class AdminController {
   }
 
   /**
-   * Reads the on-chain company-wallet address and the current pool-wallet balance.
+   * Reads the on-chain security-wallet address and the current pool-wallet balance.
    * The pool wallet receives the 20% locked portion of every commission.
    */
-  static async getCompanyWalletInfo(req: Request, res: Response, next: NextFunction): Promise<void> {
+  static async getSecurityWalletInfo(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const [address, usdtBalance, usdcBalance] = await Promise.all([
-        CompanyWalletService.getCompanyWalletAddress(),
-        CompanyWalletService.getPoolWalletBalance('USDT').catch(() => ({ balance: 0 })),
-        CompanyWalletService.getPoolWalletBalance('USDC').catch(() => ({ balance: 0 })),
+        SecurityWalletService.getSecurityWalletAddress(),
+        SecurityWalletService.getPoolWalletBalance('USDT').catch(() => ({ balance: 0 })),
+        SecurityWalletService.getPoolWalletBalance('USDC').catch(() => ({ balance: 0 })),
       ]);
       sendSuccess(
         res,
         {
-          companyWalletAddress: address,
+          securityWalletAddress: address,
           configured: !!address,
           poolWallet: { usdt: usdtBalance.balance, usdc: usdcBalance.balance },
         },
-        'Company wallet info retrieved successfully',
+        'Security wallet info retrieved successfully',
       );
     } catch (error) {
       next(error);
@@ -107,32 +107,13 @@ export class AdminController {
 
   /**
    * Returns all wallets whose last commission claim is overdue for a given token.
-   * Requires the company wallet private key to be configured.
    */
-  static async getOverdueWallets(req: Request, res: Response, next: NextFunction): Promise<void> {
+  static async getUnclaimedWallets(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const rawToken = req.params.token || 'USDT';
       const token = (Array.isArray(rawToken) ? rawToken[0] : rawToken).toUpperCase();
-      const result = await CompanyWalletService.getOverdueWallets(token);
+      const result = await SecurityWalletService.getUnclaimedWallets(token);
       sendSuccess(res, result, `Found ${result.count} overdue wallet(s)`);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Executes a company-wallet withdrawal on behalf of an overdue user.
-   * Requires the company wallet private key to be configured.
-   */
-  static async runCompanyWithdrawal(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const { walletAddress, token } = req.body;
-      if (!walletAddress || typeof walletAddress !== 'string') {
-        sendSuccess(res, { error: 'walletAddress is required' }, 'Missing walletAddress', 400);
-        return;
-      }
-      const result = await CompanyWalletService.withdrawForUser(walletAddress, token || 'USDT');
-      sendSuccess(res, result, `Company withdrawal executed for ${walletAddress}`);
     } catch (error) {
       next(error);
     }

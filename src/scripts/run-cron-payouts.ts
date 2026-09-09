@@ -17,21 +17,17 @@ import { hntrContract, provider, getErc20, getContractAmountDecimals } from '../
 import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares } from '../constants';
 
 async function diagnose() {
-  const [achievementWallet, leadershipWallet, usdtAddress, usdcAddress, amountDecimals] =
+  const [rankWallet, leadershipWallet, burnerAddr, usdtAddress, usdcAddress, amountDecimals] =
     await Promise.all([
-      hntrContract.achievementWallet(),
+      hntrContract.rankWallet(),
       hntrContract.leadershipWallet(),
+      hntrContract.burnerWallet(),
       hntrContract.usdt(),
       hntrContract.usdc(),
       getContractAmountDecimals(),
     ]);
 
-  const achievementKey = ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY
-    ? new ethers.Wallet(ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY).address.toLowerCase()
-    : null;
-  const leadershipKey = ENV.LEADERSHIP_PRIVATE_KEY
-    ? new ethers.Wallet(ENV.LEADERSHIP_PRIVATE_KEY).address.toLowerCase()
-    : null;
+  const achievementWallet = rankWallet;
 
   const usdt = getErc20(String(usdtAddress));
   const usdc = getErc20(String(usdcAddress));
@@ -72,10 +68,10 @@ async function diagnose() {
       {
         contract: ENV.CONTRACT_ADDRESS || process.env.CONTRACT_ADDRESS,
         amountDecimals,
-        achievement: {
+        burner: String(burnerAddr).toLowerCase(),
+        rank: {
           onChain: String(achievementWallet).toLowerCase(),
-          envKey: achievementKey,
-          keyMatch: achievementKey === String(achievementWallet).toLowerCase(),
+          note: 'admin connects this wallet and transfers USDT/USDC to the burner before Distribute',
           eth: Number(ethers.formatEther(achEth)),
           erc20: {
             USDT: Number(ethers.formatUnits(achUsdt, amountDecimals)),
@@ -94,8 +90,7 @@ async function diagnose() {
         },
         leadership: {
           onChain: String(leadershipWallet).toLowerCase(),
-          envKey: leadershipKey,
-          keyMatch: leadershipKey === String(leadershipWallet).toLowerCase(),
+          note: 'admin connects this wallet and transfers USDT/USDC to the burner before Distribute',
           eth: Number(ethers.formatEther(leadEth)),
           erc20: {
             USDT: Number(ethers.formatUnits(leadUsdt, amountDecimals)),

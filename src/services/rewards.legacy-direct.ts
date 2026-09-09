@@ -115,14 +115,14 @@ async function withdrawProtocolBalances(walletSigner: ethers.Wallet) {
 
 /** @deprecated Direct achievement→user transfers. Not called. */
 export async function legacyDirectDisbursePendingAchievementBonuses() {
-  if (!ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY) {
+  if (!process.env.ACHIEVEMENT_WALLET_PRIVATE_KEY) {
     throw new Error(
       'ACHIEVEMENT_WALLET_PRIVATE_KEY not found in environment for automated payouts!',
     );
   }
 
   const achievementWallet = await hntrContract.achievementWallet();
-  const adminWallet = new ethers.Wallet(ENV.ACHIEVEMENT_WALLET_PRIVATE_KEY, provider);
+  const adminWallet = new ethers.Wallet(process.env.ACHIEVEMENT_WALLET_PRIVATE_KEY, provider);
   if (adminWallet.address.toLowerCase() !== String(achievementWallet).toLowerCase()) {
     throw new Error(
       `ACHIEVEMENT_WALLET_PRIVATE_KEY address ${adminWallet.address} does not match on-chain achievementWallet ${achievementWallet}`,
@@ -202,11 +202,11 @@ export async function legacyDirectDisbursePendingAchievementBonuses() {
 export async function legacyDirectCalculateMonthlyLeadershipPool() {
   const leadershipWallet = await hntrContract.leadershipWallet();
 
-  if (!ENV.LEADERSHIP_PRIVATE_KEY) {
+  if (!process.env.LEADERSHIP_PRIVATE_KEY) {
     throw new Error('LEADERSHIP_PRIVATE_KEY not found in environment for automated payouts!');
   }
 
-  const adminWallet = new ethers.Wallet(ENV.LEADERSHIP_PRIVATE_KEY, provider);
+  const adminWallet = new ethers.Wallet(process.env.LEADERSHIP_PRIVATE_KEY, provider);
   if (adminWallet.address.toLowerCase() !== String(leadershipWallet).toLowerCase()) {
     throw new Error(
       `LEADERSHIP_PRIVATE_KEY address ${adminWallet.address} does not match on-chain leadershipWallet ${leadershipWallet}`,
