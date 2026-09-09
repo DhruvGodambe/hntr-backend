@@ -95,5 +95,5 @@ export function last4(normalizedCode: string): string {
 }
 
 export function redeemUrl(code: string): string {
-  return `${ENV.APP_BASE_URL.replace(/\/$/, '')}/redeem?code=${encodeURIComponent(code)}`;
+  return `${ENV.APP_BASE_URL.replace(/\/$/, '')}/membership?code=${encodeURIComponent(code)}`;
 }
