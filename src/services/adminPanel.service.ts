@@ -11,7 +11,13 @@ import DisbursementBatch from '../models/DisbursementBatch';
 import { RewardsService } from './rewards.service';
 import { NetworkService } from './network.service';
 import { CompanyWalletService } from './companyWallet.service';
-import { hntrContract, getErc20, getContractAmountDecimals, provider } from './contract.service';
+import {
+  hntrContract,
+  hntrContractWithCompanySigner,
+  getErc20,
+  getContractAmountDecimals,
+  provider,
+} from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
 import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares, getRankLadderIndex } from '../constants';
@@ -658,6 +664,57 @@ export class AdminPanelService {
       txHash: txHash.toLowerCase(),
       message: `Membership set to ${onChainTier} (company free override).`,
     };
+  }
+
+  /**
+   * Executes `overrideMembershipTier` on-chain using the backend company-wallet
+   * signer, then persists the Mongo tier + forced-membership flags via
+   * recordMembershipOverride. Lets the admin panel force a tier without connecting
+   * the company wallet in the browser. Requires COMPANY_WALLET_PRIVATE_KEY.
+   */
+  static async executeMembershipOverride(params: { username: string; tier: string }) {
+    const { username, tier } = params;
+
+    if (!VALID_TIERS.includes(tier as (typeof VALID_TIERS)[number]) || tier === 'None') {
+      throw new AdminPanelError(
+        'INVALID_TIER',
+        `Invalid tier. Allowed: ${VALID_TIERS.filter((t) => t !== 'None').join(', ')}`,
+        400,
+      );
+    }
+
+    if (!hntrContractWithCompanySigner) {
+      throw new AdminPanelError(
+        'COMPANY_SIGNER_NOT_CONFIGURED',
+        'COMPANY_WALLET_PRIVATE_KEY is not configured in the backend. Connect the company wallet in the admin UI instead.',
+        503,
+      );
+    }
+
+    const user = await User.findOne({ username });
+    if (!user) throw new AdminPanelError('USER_NOT_FOUND', 'User not found.', 404);
+    if (!user.walletAddress) {
+      throw new AdminPanelError('NO_WALLET', 'User has no wallet address.', 400);
+    }
+
+    const wallet = user.walletAddress.toLowerCase();
+    const requestedIdx = getTierLadderIndex(tier);
+
+    const onChainUser = await hntrContract.getUser(wallet);
+    const onChainTierIdx = Number(onChainUser[0] ?? onChainUser.tier);
+    if (requestedIdx <= onChainTierIdx) {
+      throw new AdminPanelError(
+        'INVALID_UPGRADE',
+        `On-chain tier is already ${VALID_TIERS[onChainTierIdx] || 'None'}. Can only force a strictly higher tier.`,
+        400,
+      );
+    }
+
+    const tx = await (hntrContractWithCompanySigner as any).overrideMembershipTier(wallet, requestedIdx);
+    logger.info(`Membership override submitted for ${username} (${wallet}) -> ${tier}: ${tx.hash}`);
+    await tx.wait();
+
+    return this.recordMembershipOverride({ username, txHash: tx.hash as string, tier });
   }
 
   static async getTransactions(type: string, page: number, limit: number, skip: number, search?: string) {

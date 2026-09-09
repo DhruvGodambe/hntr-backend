@@ -234,6 +234,24 @@ export class AdminPanelController {
     }
   }
 
+  static async executeMembershipOverride(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const username = paramString(req.params.username);
+      const { tier } = req.body || {};
+      if (!tier) {
+        sendError(res, 'tier is required.', 400);
+        return;
+      }
+      const data = await AdminPanelService.executeMembershipOverride({
+        username,
+        tier: String(tier),
+      });
+      sendSuccess(res, data, data.message);
+    } catch (error) {
+      handlePanelError(error, res, next);
+    }
+  }
+
   static async getTransactions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { page, limit, skip } = parsePagination(req.query as Record<string, unknown>);
