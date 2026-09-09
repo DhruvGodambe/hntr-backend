@@ -7,6 +7,9 @@ export interface IAdminAccount extends Document {
   failedLoginAttempts: number;
   lockedUntil?: Date | null;
   lastLoginAt?: Date | null;
+  totpEnabled: boolean;
+  totpSecret?: string | null;
+  totpPendingSecret?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -44,6 +47,20 @@ const AdminAccountSchema: Schema = new Schema(
     lastLoginAt: {
       type: Date,
       default: null,
+    },
+    totpEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    totpSecret: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    totpPendingSecret: {
+      type: String,
+      default: null,
+      select: false,
     },
   },
   { timestamps: true },
