@@ -55,6 +55,11 @@ const UserSchema: Schema = new Schema({
     unique: true,
     sparse: true,
     index: true,
+    // Normalise on write AND on query — addresses are matched case-sensitively in
+    // Mongo, so a mixed-case value breaks the walletAddress -> username lookup used
+    // by the transaction list, the event listener, etc.
+    lowercase: true,
+    trim: true,
   },
   type: {
     type: String,
