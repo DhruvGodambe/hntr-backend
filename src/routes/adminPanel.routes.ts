@@ -15,6 +15,12 @@ router.get('/auth/me', adminApiRateLimit, AdminPanelController.me);
 router.use(adminApiRateLimit);
 router.use(requireAdminPanelAuth);
 
+// Two-factor authentication (TOTP)
+router.get('/auth/2fa/status', AdminPanelController.get2faStatus);
+router.post('/auth/2fa/setup', AdminPanelController.setup2fa);
+router.post('/auth/2fa/confirm', AdminPanelController.confirm2fa);
+router.post('/auth/2fa/disable', AdminPanelController.disable2fa);
+
 // Metrics & activity
 router.get('/metrics', AdminPanelController.getMetrics);
 router.get('/activity', AdminPanelController.getRecentActivity);

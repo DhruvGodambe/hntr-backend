@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ENV } from '../config/env';
-import { AdminAuthService } from '../services/adminAuth.service';
+import { AdminAuthService, AdminAuthResult } from '../services/adminAuth.service';
 import { AdminAccountService, AdminAccountError } from '../services/adminAccount.service';
 import { AdminPanelService, AdminPanelError } from '../services/adminPanel.service';
 import { parsePagination } from '../utils/pagination';
@@ -74,20 +74,21 @@ export class AdminPanelController {
         return;
       }
 
-      const { username, password } = req.body ?? {};
+      const { username, password, code } = req.body ?? {};
       const hasUsername = typeof username === 'string' && username.trim().length > 0;
       const hasPassword = typeof password === 'string' && password.length > 0;
+      const totpCode = typeof code === 'string' ? code : undefined;
 
       if (!hasPassword) {
         sendError(res, 'Password is required.', 400);
         return;
       }
 
-      let authResult = null;
+      let authResult: AdminAuthResult | { requiresTotp: true } | null = null;
 
       if (hasUsername && ENV.ADMIN_DB_AUTH !== 'false') {
         try {
-          authResult = await AdminAuthService.authenticateWithDatabase(username, password);
+          authResult = await AdminAuthService.authenticateWithDatabase(username, password, totpCode);
         } catch (err) {
           if (err instanceof Error && err.message === 'ACCOUNT_LOCKED') {
             sendError(res, 'Too many failed login attempts. Try again in 15 minutes.', 429, { code: 'ACCOUNT_LOCKED' });
@@ -110,6 +111,11 @@ export class AdminPanelController {
         return;
       }
 
+      if ('requiresTotp' in authResult) {
+        sendSuccess(res, { requiresTotp: true }, 'Two-factor authentication code required.');
+        return;
+      }
+
       sendSuccess(
         res,
         {
@@ -121,6 +127,87 @@ export class AdminPanelController {
         'Admin authenticated successfully',
       );
     } catch (error) {
+      next(error);
+    }
+  }
+
+  // --- Two-factor authentication (TOTP) ---
+
+  private static requireDbAdminId(req: Request, res: Response): string | null {
+    const adminId = req.adminId;
+    if (!adminId || adminId === 'admin-panel') {
+      sendError(res, 'Two-factor authentication requires a database admin account.', 400, { code: 'NO_DB_ACCOUNT' });
+      return null;
+    }
+    return adminId;
+  }
+
+  static async get2faStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const adminId = AdminPanelController.requireDbAdminId(req, res);
+      if (!adminId) return;
+      const status = await AdminAccountService.getTotpStatus(adminId);
+      sendSuccess(res, status, 'Two-factor authentication status retrieved');
+    } catch (error) {
+      if (error instanceof AdminAccountError) {
+        sendError(res, error.message, error.statusCode, { code: error.code });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  static async setup2fa(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const adminId = AdminPanelController.requireDbAdminId(req, res);
+      if (!adminId) return;
+      const setup = await AdminAccountService.generateTotpSetup(adminId);
+      sendSuccess(res, setup, 'Scan the QR code with your authenticator app, then confirm with a code.');
+    } catch (error) {
+      if (error instanceof AdminAccountError) {
+        sendError(res, error.message, error.statusCode, { code: error.code });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  static async confirm2fa(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const adminId = AdminPanelController.requireDbAdminId(req, res);
+      if (!adminId) return;
+      const { code } = req.body ?? {};
+      if (typeof code !== 'string' || !code.trim()) {
+        sendError(res, 'Authentication code is required.', 400);
+        return;
+      }
+      await AdminAccountService.confirmTotpSetup(adminId, code.trim());
+      sendSuccess(res, { enabled: true }, 'Two-factor authentication enabled.');
+    } catch (error) {
+      if (error instanceof AdminAccountError) {
+        sendError(res, error.message, error.statusCode, { code: error.code });
+        return;
+      }
+      next(error);
+    }
+  }
+
+  static async disable2fa(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const adminId = AdminPanelController.requireDbAdminId(req, res);
+      if (!adminId) return;
+      const { code } = req.body ?? {};
+      if (typeof code !== 'string' || !code.trim()) {
+        sendError(res, 'Authentication code is required.', 400);
+        return;
+      }
+      await AdminAccountService.disableTotp(adminId, code.trim());
+      sendSuccess(res, { enabled: false }, 'Two-factor authentication disabled.');
+    } catch (error) {
+      if (error instanceof AdminAccountError) {
+        sendError(res, error.message, error.statusCode, { code: error.code });
+        return;
+      }
       next(error);
     }
   }
