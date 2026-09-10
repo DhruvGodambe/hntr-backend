@@ -525,6 +525,9 @@ export class BlockchainService {
       sub: `${tierStr} membership confirmed${oldTier && oldTier !== 'None' ? ` (from ${oldTier})` : ''}.`,
       link: 'VIEW MEMBERSHIP',
       meta: { tier: tierStr, oldTier, txHash: normalizedHash, type, amountUsd },
+      // One notification per on-chain membership event, even if the listener
+      // re-processes the same tx (WS reconnect / poll overlap).
+      dedupeKey: `${type === 'PURCHASE' ? 'MEMBERSHIP_PURCHASED' : 'MEMBERSHIP_UPGRADED'}:${normalizedHash}`,
     });
 
     logger.info(

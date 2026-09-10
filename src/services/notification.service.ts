@@ -1,5 +1,9 @@
 import Notification, { INotification, NotificationType } from '../models/Notification';
 
+function isDuplicateKeyError(err: any): boolean {
+  return err?.code === 11000 || err?.codeName === 'DuplicateKey';
+}
+
 export interface CreateNotificationInput {
   walletAddress: string;
   type: NotificationType;
@@ -7,6 +11,13 @@ export interface CreateNotificationInput {
   sub: string;
   link?: string;
   meta?: Record<string, unknown>;
+  /**
+   * Optional idempotency key. When set, a second create with the same
+   * (walletAddress, dedupeKey) is rejected by a unique index — use it for
+   * events that can fire more than once but must notify the user only once
+   * (e.g. `RANK_UP:Scout`, `MEMBERSHIP_PURCHASED:<txHash>`).
+   */
+  dedupeKey?: string;
 }
 
 export class NotificationService {
@@ -18,6 +29,7 @@ export class NotificationService {
       sub: input.sub,
       link: input.link,
       meta: input.meta,
+      dedupeKey: input.dedupeKey,
       read: false,
       createdAt: new Date(),
     });
@@ -27,6 +39,14 @@ export class NotificationService {
     try {
       return await this.create(input);
     } catch (err: any) {
+      if (isDuplicateKeyError(err)) {
+        // Expected: the event was delivered again and the first notification
+        // for this dedupeKey already exists.
+        console.info(
+          `Skipped duplicate notification (${input.type}, dedupeKey=${input.dedupeKey ?? 'n/a'}) for ${input.walletAddress}`,
+        );
+        return null;
+      }
       console.error('Failed to create notification:', err?.message || err);
       return null;
     }

@@ -330,6 +330,9 @@ export class NetworkService {
             : `Keep growing — Hunter rank and above unlock leadership pool shares.`,
         link: 'VIEW NETWORK',
         meta: { previousRank: previousDisplayRank, newRank: displayRank, shares },
+        // One rank-up notification per rank reached, even if a chain event or an
+        // overlapping volume recalc drives evaluateRank twice for this user.
+        dedupeKey: `RANK_UP:${displayRank}`,
       });
     }
 
