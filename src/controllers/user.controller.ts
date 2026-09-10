@@ -21,6 +21,16 @@ export class UserController {
     }
   }
 
+  static async checkUsername(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { username } = req.params;
+      const data = await UserService.checkUsernameAvailability(String(username ?? ''));
+      sendSuccess(res, data, data.available ? 'Username is available' : 'Username is already taken');
+    } catch (error) {
+      handleUserError(res, error, next);
+    }
+  }
+
   static async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = await UserService.registerUser(req.body);

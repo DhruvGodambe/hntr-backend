@@ -52,11 +52,13 @@ const AdminAccountSchema: Schema = new Schema(
       type: Boolean,
       default: false,
     },
+    // Active TOTP secret (base32). Only present once 2FA is confirmed.
     totpSecret: {
       type: String,
       default: null,
       select: false,
     },
+    // Candidate secret during setup, before the first valid code confirms it.
     totpPendingSecret: {
       type: String,
       default: null,

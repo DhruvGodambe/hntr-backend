@@ -20,6 +20,13 @@ export interface INotification extends Document {
   sub: string;
   link?: string;
   meta?: Record<string, unknown>;
+  /**
+   * Optional idempotency key. When set, at most one notification with the same
+   * (walletAddress, dedupeKey) is ever stored — used for events that can be
+   * delivered more than once (chain-event replay, overlapping volume recalcs)
+   * but must notify the user exactly once, e.g. reaching a given rank.
+   */
+  dedupeKey?: string;
   read: boolean;
   createdAt: Date;
 }
@@ -62,6 +69,9 @@ const NotificationSchema: Schema = new Schema({
   meta: {
     type: Schema.Types.Mixed,
   },
+  dedupeKey: {
+    type: String,
+  },
   read: {
     type: Boolean,
     default: false,
@@ -75,5 +85,12 @@ const NotificationSchema: Schema = new Schema({
 });
 
 NotificationSchema.index({ walletAddress: 1, createdAt: -1 });
+// Race-safe idempotency: a duplicate event delivery hits E11000 instead of
+// inserting a second identical notification. Only rows that set dedupeKey are
+// indexed, so legacy notifications are unaffected.
+NotificationSchema.index(
+  { walletAddress: 1, dedupeKey: 1 },
+  { unique: true, partialFilterExpression: { dedupeKey: { $type: 'string' } } },
+);
 
 export default mongoose.model<INotification>('Notification', NotificationSchema);

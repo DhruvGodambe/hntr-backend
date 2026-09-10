@@ -3,19 +3,20 @@ import { AdminPanelController } from '../controllers/adminPanel.controller';
 import { VoucherAdminController } from '../controllers/voucherAdmin.controller';
 import { requireAdminPanelAuth, requireAdminPrivileged } from '../middlewares/adminPanelAuth.middleware';
 import { adminApiRateLimit, adminLoginRateLimit, adminRegisterRateLimit } from '../middlewares/rateLimiter.middleware';
+import { verifyTurnstile } from '../middlewares/turnstile.middleware';
 
 const router = Router();
 
-// --- Public (rate-limited) ---
-router.post('/auth/register', adminRegisterRateLimit, AdminPanelController.register);
-router.post('/auth/login', adminLoginRateLimit, AdminPanelController.login);
+// --- Public (rate-limited + Cloudflare Turnstile "verify you are human") ---
+router.post('/auth/register', adminRegisterRateLimit, verifyTurnstile, AdminPanelController.register);
+router.post('/auth/login', adminLoginRateLimit, verifyTurnstile, AdminPanelController.login);
 router.get('/auth/me', adminApiRateLimit, AdminPanelController.me);
 
 // --- All routes below require admin JWT ---
 router.use(adminApiRateLimit);
 router.use(requireAdminPanelAuth);
 
-// Two-factor authentication (TOTP)
+// Two-factor authentication (TOTP) — manage the signed-in admin's own 2FA
 router.get('/auth/2fa/status', AdminPanelController.get2faStatus);
 router.post('/auth/2fa/setup', AdminPanelController.setup2fa);
 router.post('/auth/2fa/confirm', AdminPanelController.confirm2fa);

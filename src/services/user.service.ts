@@ -17,9 +17,50 @@ export class UserError extends Error {
   }
 }
 
+/** Same rule the signup form enforces client-side (lib/signup-validation.ts). */
+const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
+
 export class UserService {
   static isRootAdminUser(user: IUser): boolean {
     return user.type === 'admin' || user.username.toLowerCase() === 'admin';
+  }
+
+  /** Normalise + format-check a username. Throws UserError on an invalid shape. */
+  static normalizeUsername(rawUsername: string): string {
+    const username = String(rawUsername ?? '').trim().replace(/^@/, '');
+    if (!username) {
+      throw new UserError('USERNAME_REQUIRED', 'Username is required.', 400);
+    }
+    if (!USERNAME_PATTERN.test(username)) {
+      throw new UserError(
+        'USERNAME_INVALID',
+        'Username must be 3–20 characters and use letters, numbers, or underscores only.',
+        400,
+      );
+    }
+    return username;
+  }
+
+  /** True when a username is already registered (case-insensitive). */
+  static async isUsernameTaken(username: string): Promise<boolean> {
+    const existing = await User.findOne({
+      username: new RegExp(`^${escapeRegex(username)}$`, 'i'),
+    })
+      .select({ _id: 1 })
+      .lean();
+    return Boolean(existing);
+  }
+
+  /**
+   * Signup availability check — same contract as validateSponsor: public, throws
+   * a UserError for a bad shape, otherwise reports whether the name is free.
+   */
+  static async checkUsernameAvailability(
+    rawUsername: string,
+  ): Promise<{ username: string; available: boolean }> {
+    const username = this.normalizeUsername(rawUsername);
+    const taken = await this.isUsernameTaken(username);
+    return { username, available: !taken };
   }
 
   static async assertSponsorEligible(sponsorUsername: string): Promise<IUser> {
@@ -64,13 +105,15 @@ export class UserService {
     phone: string;
     sponsorUsername?: string;
   }): Promise<IUser> {
-    const { username, walletAddress, email, phone, sponsorUsername } = data;
+    const { walletAddress, email, phone, sponsorUsername } = data;
+    const username = this.normalizeUsername(data.username);
 
     // A username registered once must never be re-created — a second registerUser
     // for the same name would push it into a sponsor's directDownline before the
-    // unique-index E11000 on save, corrupting the tree.
-    const alreadyRegistered = await User.findOne({ username });
-    if (alreadyRegistered) {
+    // unique-index E11000 on save, corrupting the tree. Checked case-insensitively
+    // so "Alpha" and "alpha" can't both exist (the Mongo unique index is
+    // case-sensitive and would let them through).
+    if (await this.isUsernameTaken(username)) {
       throw new UserError('USERNAME_TAKEN', 'That username is already registered.', 409);
     }
 

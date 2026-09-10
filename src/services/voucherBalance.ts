@@ -163,7 +163,7 @@ export async function recalculateBalance(
 }
 
 export async function getBalances(walletAddress: string): Promise<
-  { token: VoucherToken; balance: number; issued: number; refunded: number }[]
+  { token: VoucherToken; balance: number; issued: number; refunded: number; granted: number }[]
 > {
   const wallet = walletAddress.toLowerCase();
   const rows = await VoucherBalance.find({ walletAddress: wallet }).lean();
@@ -175,6 +175,8 @@ export async function getBalances(walletAddress: string): Promise<
       balance: round2(r?.balance ?? 0),
       issued: round2(r?.issued ?? 0),
       refunded: round2(r?.refunded ?? 0),
+      // Net promo credit an admin has handed this account (lifetime credits − debits).
+      granted: round2((r?.creditedTotal ?? 0) - (r?.debitedTotal ?? 0)),
     };
   });
 }

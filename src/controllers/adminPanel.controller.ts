@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ENV } from '../config/env';
-import { AdminAuthService, AdminAuthResult } from '../services/adminAuth.service';
+import { AdminAuthService, AdminAuthResult, AdminTotpChallenge } from '../services/adminAuth.service';
 import { AdminAccountService, AdminAccountError } from '../services/adminAccount.service';
 import { AdminPanelService, AdminPanelError } from '../services/adminPanel.service';
 import { parsePagination } from '../utils/pagination';
@@ -94,7 +94,7 @@ export class AdminPanelController {
         return;
       }
 
-      let authResult: AdminAuthResult | { requiresTotp: true } | null = null;
+      let authResult: AdminAuthResult | AdminTotpChallenge | null = null;
 
       if (hasUsername && ENV.ADMIN_DB_AUTH !== 'false') {
         try {
@@ -122,7 +122,12 @@ export class AdminPanelController {
       }
 
       if ('requiresTotp' in authResult) {
-        sendSuccess(res, { requiresTotp: true }, 'Two-factor authentication code required.');
+        // Password OK, but this account has 2FA. The client must re-submit
+        // username + password + a fresh `code`. Old clients that don't know
+        // this flow simply surface the message and can't proceed (by design).
+        sendError(res, 'Enter the 6-digit code from your authenticator app.', 401, {
+          code: 'TOTP_REQUIRED',
+        });
         return;
       }
 
@@ -141,8 +146,9 @@ export class AdminPanelController {
     }
   }
 
-  // --- Two-factor authentication (TOTP) ---
+  // --- Two-factor authentication (TOTP), all behind requireAdminPanelAuth ---
 
+  /** Legacy env-password sessions have no DB account, so 2FA can't attach to them. */
   private static requireDbAdminId(req: Request, res: Response): string | null {
     const adminId = req.adminId;
     if (!adminId || adminId === 'admin-panel') {
@@ -152,6 +158,14 @@ export class AdminPanelController {
     return adminId;
   }
 
+  private static handle2faError(error: unknown, res: Response, next: NextFunction): void {
+    if (error instanceof AdminAccountError) {
+      sendError(res, error.message, error.statusCode, { code: error.code });
+      return;
+    }
+    next(error);
+  }
+
   static async get2faStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const adminId = AdminPanelController.requireDbAdminId(req, res);
@@ -159,11 +173,7 @@ export class AdminPanelController {
       const status = await AdminAccountService.getTotpStatus(adminId);
       sendSuccess(res, status, 'Two-factor authentication status retrieved');
     } catch (error) {
-      if (error instanceof AdminAccountError) {
-        sendError(res, error.message, error.statusCode, { code: error.code });
-        return;
-      }
-      next(error);
+      AdminPanelController.handle2faError(error, res, next);
     }
   }
 
@@ -174,11 +184,7 @@ export class AdminPanelController {
       const setup = await AdminAccountService.generateTotpSetup(adminId);
       sendSuccess(res, setup, 'Scan the QR code with your authenticator app, then confirm with a code.');
     } catch (error) {
-      if (error instanceof AdminAccountError) {
-        sendError(res, error.message, error.statusCode, { code: error.code });
-        return;
-      }
-      next(error);
+      AdminPanelController.handle2faError(error, res, next);
     }
   }
 
@@ -194,11 +200,7 @@ export class AdminPanelController {
       await AdminAccountService.confirmTotpSetup(adminId, code.trim());
       sendSuccess(res, { enabled: true }, 'Two-factor authentication enabled.');
     } catch (error) {
-      if (error instanceof AdminAccountError) {
-        sendError(res, error.message, error.statusCode, { code: error.code });
-        return;
-      }
-      next(error);
+      AdminPanelController.handle2faError(error, res, next);
     }
   }
 
@@ -214,11 +216,7 @@ export class AdminPanelController {
       await AdminAccountService.disableTotp(adminId, code.trim());
       sendSuccess(res, { enabled: false }, 'Two-factor authentication disabled.');
     } catch (error) {
-      if (error instanceof AdminAccountError) {
-        sendError(res, error.message, error.statusCode, { code: error.code });
-        return;
-      }
-      next(error);
+      AdminPanelController.handle2faError(error, res, next);
     }
   }
 

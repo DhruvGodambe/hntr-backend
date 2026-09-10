@@ -565,6 +565,9 @@ export class AdminPanelService {
           source: 'admin_override',
           isForcedRank: true,
         },
+        // Share the rank-reached key with the organic path so an admin force-up
+        // followed by volume catching up doesn't notify twice for the same rank.
+        dedupeKey: `RANK_UP:${nextRank}`,
       });
     } catch (err: unknown) {
       logger.error(
