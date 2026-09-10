@@ -22,6 +22,7 @@ import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
 import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares, getRankLadderIndex } from '../constants';
 import { paginatedResponse, sanitizeSearch } from '../utils/pagination';
+import { normalizeOpenSea, normalizeTags, PoolOpenSeaInput } from './strategyPool.service';
 import { logger } from '../utils/logger';
 import { runMonthlyLeadershipPayout } from '../jobs/leadership-cron';
 
@@ -1363,60 +1364,43 @@ export class AdminPanelService {
     return { results, count: results.length };
   }
 
-  static async ensureDefaultPools() {
-    const count = await StrategyPool.countDocuments();
-    if (count > 0) return;
-
-    await StrategyPool.insertMany([
-      {
-        slug: 'bored-ape-yacht-club',
-        name: 'Bored Ape Yacht Club',
-        targetEth: 35,
-        raisedEth: 28.5,
-        status: 'OPEN',
-        imageUrl: '/assets/images/image-6.jpg',
-        collectionName: 'BAYC',
-      },
-      {
-        slug: 'pudgy-penguins',
-        name: 'Pudgy Penguins',
-        targetEth: 8.5,
-        raisedEth: 4.25,
-        status: 'OPEN',
-        imageUrl: '/assets/images/image-10.jpg',
-        collectionName: 'Pudgy Penguins',
-      },
-      {
-        slug: 'azuki',
-        name: 'Azuki',
-        targetEth: 12,
-        raisedEth: 1.2,
-        status: 'OPEN',
-        imageUrl: '/assets/images/image-11.jpg',
-        collectionName: 'Azuki',
-      },
-    ]);
+  static toAdminPoolDto(p: Record<string, any>) {
+    return {
+      id: String(p._id),
+      slug: p.slug,
+      name: p.name,
+      raisedEth: p.raisedEth,
+      status: p.status,
+      imageUrl: p.imageUrl,
+      depositsPaused: p.depositsPaused,
+      collectionName: p.collectionName,
+      openSea: p.openSea
+        ? {
+            collectionSlug: p.openSea.collectionSlug,
+            contractAddress: p.openSea.contractAddress,
+            chain: p.openSea.chain,
+            tokenStandard: p.openSea.tokenStandard,
+            protocolAddress: p.openSea.protocolAddress,
+            trait: p.openSea.trait,
+            offerProtectionEnabled: p.openSea.offerProtectionEnabled,
+          }
+        : undefined,
+      gpProfit: p.gpProfit ?? '0',
+      ethProfit: p.ethProfit ?? '0',
+      usdtProfit: p.usdtProfit ?? '0',
+      participants: p.participants ?? 0,
+      daysRemaining: p.daysRemaining ?? 0,
+      tags: p.tags,
+    };
   }
 
   static async getStrategyPools(page: number, limit: number, skip: number) {
-    await this.ensureDefaultPools();
     const [total, pools] = await Promise.all([
       StrategyPool.countDocuments(),
       StrategyPool.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
     ]);
 
-    const items = pools.map((p) => ({
-      id: String(p._id),
-      slug: p.slug,
-      name: p.name,
-      targetEth: p.targetEth,
-      raisedEth: p.raisedEth,
-      progress: p.targetEth > 0 ? Math.min(100, Math.round((p.raisedEth / p.targetEth) * 100)) : 0,
-      status: p.status,
-      imageUrl: p.imageUrl,
-      depositsPaused: p.depositsPaused,
-      collectionName: p.collectionName,
-    }));
+    const items = pools.map((p) => this.toAdminPoolDto(p));
 
     return paginatedResponse(items, total, page, limit);
   }
@@ -1424,9 +1408,16 @@ export class AdminPanelService {
   static async createStrategyPool(data: {
     name: string;
     slug?: string;
-    targetEth: number;
     imageUrl?: string;
     collectionName?: string;
+    openSea?: PoolOpenSeaInput;
+    raisedEth?: number;
+    gpProfit?: string;
+    ethProfit?: string;
+    usdtProfit?: string;
+    participants?: number;
+    daysRemaining?: number;
+    tags?: string[] | string;
   }) {
     const slug =
       data.slug ||
@@ -1441,60 +1432,75 @@ export class AdminPanelService {
     const pool = await StrategyPool.create({
       slug,
       name: data.name,
-      targetEth: data.targetEth,
       imageUrl: data.imageUrl || '/assets/images/pool-default.jpg',
       collectionName: data.collectionName,
-      raisedEth: 0,
+      openSea: normalizeOpenSea(data.openSea),
+      raisedEth: data.raisedEth !== undefined && data.raisedEth >= 0 ? data.raisedEth : 0,
+      gpProfit: data.gpProfit,
+      ethProfit: data.ethProfit,
+      usdtProfit: data.usdtProfit,
+      participants: data.participants,
+      daysRemaining: data.daysRemaining,
+      tags: normalizeTags(data.tags),
       status: 'OPEN',
       depositsPaused: false,
     });
 
-    return {
-      id: String(pool._id),
-      slug: pool.slug,
-      name: pool.name,
-      targetEth: pool.targetEth,
-      raisedEth: pool.raisedEth,
-      status: pool.status,
-      imageUrl: pool.imageUrl,
-      depositsPaused: pool.depositsPaused,
-    };
+    return this.toAdminPoolDto(pool.toObject());
   }
 
   static async updateStrategyPool(
     poolId: string,
     data: Partial<{
       name: string;
+      slug: string;
       imageUrl: string;
-      targetEth: number;
       status: string;
       depositsPaused: boolean;
       raisedEth: number;
+      collectionName: string;
+      openSea: PoolOpenSeaInput | null;
+      gpProfit: string;
+      ethProfit: string;
+      usdtProfit: string;
+      participants: number;
+      daysRemaining: number;
+      tags: string[] | string;
     }>,
   ) {
     const pool = await StrategyPool.findById(poolId);
     if (!pool) throw new AdminPanelError('POOL_NOT_FOUND', 'Strategy pool not found.', 404);
 
+    if (data.slug !== undefined) {
+      const nextSlug = String(data.slug)
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+      if (!nextSlug) throw new AdminPanelError('INVALID_SLUG', 'Slug cannot be empty.', 400);
+      if (nextSlug !== pool.slug) {
+        const clash = await StrategyPool.findOne({ slug: nextSlug, _id: { $ne: pool._id } });
+        if (clash) throw new AdminPanelError('DUPLICATE_SLUG', 'A pool with this slug already exists.', 409);
+        pool.slug = nextSlug;
+      }
+    }
     if (data.name !== undefined) pool.name = data.name;
     if (data.imageUrl !== undefined) pool.imageUrl = data.imageUrl;
-    if (data.targetEth !== undefined) pool.targetEth = data.targetEth;
     if (data.status !== undefined) pool.status = data.status as 'OPEN' | 'CLOSED' | 'COMPLETED';
     if (data.depositsPaused !== undefined) pool.depositsPaused = data.depositsPaused;
     if (data.raisedEth !== undefined) pool.raisedEth = data.raisedEth;
+    if (data.collectionName !== undefined) pool.collectionName = data.collectionName;
+    if (data.openSea !== undefined) pool.openSea = data.openSea === null ? undefined : normalizeOpenSea(data.openSea);
+    if (data.gpProfit !== undefined) pool.gpProfit = data.gpProfit;
+    if (data.ethProfit !== undefined) pool.ethProfit = data.ethProfit;
+    if (data.usdtProfit !== undefined) pool.usdtProfit = data.usdtProfit;
+    if (data.participants !== undefined) pool.participants = data.participants;
+    if (data.daysRemaining !== undefined) pool.daysRemaining = data.daysRemaining;
+    if (data.tags !== undefined) pool.tags = normalizeTags(data.tags);
 
     await pool.save();
 
-    return {
-      id: String(pool._id),
-      slug: pool.slug,
-      name: pool.name,
-      targetEth: pool.targetEth,
-      raisedEth: pool.raisedEth,
-      progress: pool.targetEth > 0 ? Math.min(100, Math.round((pool.raisedEth / pool.targetEth) * 100)) : 0,
-      status: pool.status,
-      imageUrl: pool.imageUrl,
-      depositsPaused: pool.depositsPaused,
-    };
+    return this.toAdminPoolDto(pool.toObject());
   }
 
   static async deleteStrategyPool(poolId: string) {

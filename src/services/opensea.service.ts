@@ -14,11 +14,13 @@ const GET_ALLOWED = new RegExp(
     `|collection/${SLUG}/nfts` +
     `|events/collection/${SLUG}` +
     `|listings/collection/${SLUG}/best` +
+    `|offers/collection/${SLUG}` +
+    `|offers/collection/${SLUG}/nfts/${TOKEN}` +
     `|chain/${CHAIN}/contract/${ADDR}/nfts/${TOKEN}` +
     `)(?:\\?.*)?$`,
 );
 
-const POST_ALLOWED = /^nfts\/batch(?:\?.*)?$/;
+const POST_ALLOWED = /^(?:nfts\/batch|offers\/build)(?:\?.*)?$/;
 
 export interface MarketProxyResult {
   status: number;
