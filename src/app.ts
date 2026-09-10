@@ -11,6 +11,7 @@ import authRoutes from './routes/auth.routes';
 import membershipRoutes from './routes/membership.routes';
 import voucherRoutes from './routes/voucher.routes';
 import marketRoutes from './routes/market.routes';
+import poolsRoutes from './routes/pools.routes';
 import turnstileRoutes from './routes/turnstile.routes';
 
 export function createApp(): Express {
@@ -26,6 +27,7 @@ export function createApp(): Express {
   app.use('/api/membership', membershipRoutes);
   app.use('/api/vouchers', voucherRoutes);
   app.use('/api/market', marketRoutes);
+  app.use('/api/pools', poolsRoutes);
   app.use('/api/turnstile', turnstileRoutes);
   app.use('/api/admin', adminPanelRoutes);
   app.use('/api/admin', adminRoutes);

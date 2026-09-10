@@ -17,6 +17,16 @@ function handlePanelError(err: unknown, res: Response, next: NextFunction) {
     sendError(res, err.message, err.statusCode, { code: err.code });
     return;
   }
+  if (
+    err &&
+    typeof err === 'object' &&
+    typeof (err as { statusCode?: unknown }).statusCode === 'number' &&
+    typeof (err as { code?: unknown }).code === 'string'
+  ) {
+    const e = err as { statusCode: number; code: string; message?: string };
+    sendError(res, e.message || 'Request failed', e.statusCode, { code: e.code });
+    return;
+  }
   next(err);
 }
 
@@ -505,21 +515,37 @@ export class AdminPanelController {
 
   static async createPool(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { name, slug, targetEth, imageUrl, collectionName } = req.body || {};
+      const {
+        name,
+        slug,
+        imageUrl,
+        collectionName,
+        openSea,
+        raisedEth,
+        gpProfit,
+        ethProfit,
+        usdtProfit,
+        participants,
+        daysRemaining,
+        tags,
+      } = req.body || {};
       if (!name || typeof name !== 'string') {
         sendError(res, 'name is required.', 400);
-        return;
-      }
-      if (targetEth === undefined || Number(targetEth) <= 0) {
-        sendError(res, 'targetEth must be a positive number.', 400);
         return;
       }
       const data = await AdminPanelService.createStrategyPool({
         name,
         slug,
-        targetEth: Number(targetEth),
         imageUrl,
         collectionName,
+        openSea,
+        raisedEth: raisedEth === undefined ? undefined : Number(raisedEth),
+        gpProfit,
+        ethProfit,
+        usdtProfit,
+        participants: participants === undefined ? undefined : Number(participants),
+        daysRemaining: daysRemaining === undefined ? undefined : Number(daysRemaining),
+        tags,
       });
       sendSuccess(res, data, 'Strategy pool created successfully', 201);
     } catch (error) {
