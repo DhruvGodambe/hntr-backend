@@ -41,6 +41,7 @@ export class VoucherAdminService {
           enabled: a.enabled,
           balances,
           issuedTotal: balances.reduce((s, b) => s + b.issued, 0),
+          grantedTotal: balances.reduce((s, b) => s + b.granted, 0),
           activeCount,
           redeemedCount,
         };
