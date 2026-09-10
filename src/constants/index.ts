@@ -114,8 +114,8 @@ export function getLeadershipShares(rank: string | null | undefined): number {
 }
 
 /**
- * One-time rank achievement bonuses (PDF §5). Paid from achievementWallet
- * when it holds enough USDT/USDC. Must stay in lockstep with RewardsService.
+ * One-time rank achievement bonuses (PDF §5). Paid from the burner wallet,
+ * which the admin funds from the rankWallet. Must stay in lockstep with RewardsService.
  */
 export const RANK_ACHIEVEMENT_BONUSES: Record<string, number> = {
   [Rank.SCOUT]: 25,

@@ -16,11 +16,11 @@ export const contractABI = [
   'function usdt() view returns (address)',
   'function usdc() view returns (address)',
   'function tokenDecimals() view returns (uint8)',
-  'function treasuryWallet() view returns (address)',
-  'function leadershipWallet() view returns (address)',
-  'function achievementWallet() view returns (address)',
-  'function poolWallet() view returns (address)',
   'function companyWallet() view returns (address)',
+  'function leadershipWallet() view returns (address)',
+  'function rankWallet() view returns (address)',
+  'function poolWallet() view returns (address)',
+  'function securityWallet() view returns (address)',
   'function owner() view returns (address)',
   'function users(address) view returns (uint8 tier, uint256 joinedAt)',
   'function allUsers(uint256) view returns (address)',
@@ -45,11 +45,11 @@ export const contractABI = [
   'function bootstrapClosed() view returns (bool)',
   'function fundingShortfall(address token) view returns (uint256)',
   'function getUser(address user) view returns (tuple(uint8 tier, uint256 joinedAt))',
-  'function getOverdueWallets(address token) view returns (address[])',
+  'function getUnclaimedWallets(address token) view returns (address[])',
 
   // --- Owner admin ---
-  'function setWallets(address _treasury, address _leadership, address _achievement, address _poolWallet)',
-  'function setCompanyWallet(address _companyWallet)',
+  'function setWallets(address _company, address _leadership, address _rank, address _poolWallet)',
+  'function setSecurityWallet(address _securityWallet)',
   'function pause()',
   'function unpause()',
   'function invalidateSignatures()',
@@ -65,6 +65,7 @@ export const contractABI = [
   'function acceptOwnership()',
 
   'function overrideMembershipTier(address user, uint8 tier)',
+  
   'function setBurnerWallet(address _burnerWallet)',
   'function burnerWallet() view returns (address)',
   'function voucherRedeemed(bytes32 voucherId) view returns (bool)',
@@ -76,7 +77,7 @@ export const contractABI = [
   'function purchaseMembershipWithPermit(address user, uint8 tier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature, uint256 permitValue, uint256 permitDeadline, uint8 permitV, bytes32 permitR, bytes32 permitS)',
   'function upgradeMembershipWithPermit(address user, uint8 newTier, address[] uplines, uint8[] ranks, address token, uint256 deadline, bytes signature, uint256 permitValue, uint256 permitDeadline, uint8 permitV, bytes32 permitR, bytes32 permitS)',
   'function withdrawCommissions(address user, address token)',
-  'function withdrawCompanyWallet(address user, address token)',
+  'function withdrawUnclaimed(address user, address token)',
   'function withdrawProtocolBalance(address token)',
 
   // --- Events ---
@@ -84,9 +85,9 @@ export const contractABI = [
   'event MembershipUpgraded(address indexed user, uint8 oldTier, uint8 newTier, uint256 amountPaid, address token)',
   'event CommissionEarned(address indexed user, uint256 liquidAmount, uint256 lockedAmount, uint8 level, address token)',
   'event CommissionWithdrawn(address indexed user, uint256 amount, address token)',
-  'event CompanyWalletWithdrawn(address indexed user, address indexed token, uint256 amount, address indexed companyWallet)',
-  'event WalletsUpdated(address treasury, address leadership, address achievement, address poolWallet)',
-  'event CompanyWalletUpdated(address companyWallet)',
+  'event UnclaimedWithdrawn(address indexed user, address indexed token, uint256 amount, address indexed caller)',
+  'event WalletsUpdated(address company, address leadership, address rank, address poolWallet)',
+  'event SecurityWalletUpdated(address securityWallet)',
   'event SignaturesInvalidated(uint256 newEpoch)',
   'event TokensRescued(address indexed token, address indexed to, uint256 amount)',
   'event SignerAuthorized(address indexed signer)',
@@ -125,25 +126,18 @@ export const provider = new ethers.JsonRpcProvider(RPC_URL);
 
 export const hntrContract = new ethers.Contract(CONTRACT_ADDRESS, contractABI, provider);
 
-// Optional signer for the on-chain company wallet. Only available when
-// COMPANY_WALLET_PRIVATE_KEY is configured; required for:
-// - signing purchase/upgrade commission-auth payloads (uplines + ranks)
-// - overdue-wallet queries and company-withdrawal transactions
-export const companyWallet = ENV.COMPANY_WALLET_PRIVATE_KEY
-  ? new ethers.Wallet(ENV.COMPANY_WALLET_PRIVATE_KEY, provider)
-  : null;
-
 /** Commission-auth signature lifetime. Anchored to chain time (not server clock). */
 export const SIGNATURE_TTL_SECONDS = 60 * 60; // 1 hour
 
-export const hntrContractWithCompanySigner = companyWallet
-  ? hntrContract.connect(companyWallet)
-  : null;
+// The security wallet (getUnclaimedWallets / withdrawUnclaimed) has NO backend key.
+// getUnclaimedWallets is read via eth_call with a `from` override; withdrawUnclaimed
+// is always signed by the admin connecting the security wallet in the admin UI.
 
 // Optional signer for the on-chain burner wallet. Only available when
-// BURNER_WALLET_PRIVATE_KEY is configured; the sole sender of `redeemVoucher`, so
-// bearer-voucher redeemers never sign a tx or hold ETH. Holds ETH for gas only —
-// never tokens — and is deliberately NOT a commission signer.
+// BURNER_WALLET_PRIVATE_KEY is configured. The burner sends `redeemVoucher`, signs
+// purchase/upgrade commission-auth payloads (it is the contract's authorized signer,
+// auto-enrolled by setBurnerWallet), calls `overrideMembershipTier`, and is the hop-2
+// payer for leadership/rank/pool disbursements.
 export const burnerWallet = ENV.BURNER_WALLET_PRIVATE_KEY
   ? new ethers.Wallet(ENV.BURNER_WALLET_PRIVATE_KEY, provider)
   : null;
@@ -153,9 +147,9 @@ export const hntrContractWithBurnerSigner = burnerWallet
   : null;
 
 /**
- * Startup guard: the configured burner key must control the on-chain burnerWallet,
- * and must not have somehow become a commission signer. Logs loudly and returns a
- * status object rather than throwing, so the rest of the API still boots.
+ * Startup guard: the configured burner key must control the on-chain burnerWallet
+ * and be enrolled as the commission-auth signer. Logs loudly and returns a status
+ * object rather than throwing, so the rest of the API still boots.
  */
 export async function verifyBurnerWallet(): Promise<{
   configured: boolean;
@@ -176,9 +170,9 @@ export async function verifyBurnerWallet(): Promise<{
       );
     }
     const isSigner: boolean = await hntrContract.isAuthorizedSigner(burnerWallet.address);
-    if (isSigner) {
+    if (!isSigner) {
       logger.error(
-        `SECURITY: burner wallet ${burnerWallet.address} is an authorized commission signer. Revoke it immediately.`,
+        `burner wallet ${burnerWallet.address} is NOT an authorized commission signer. Membership purchases will revert until setBurnerWallet is called on this contract.`,
       );
     }
     return { configured: true, matches, onChain, address: burnerWallet.address };

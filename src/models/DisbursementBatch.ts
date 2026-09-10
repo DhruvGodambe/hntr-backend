@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 
-export type DisbursementBatchType = 'LEADERSHIP' | 'ACHIEVEMENT';
+export type DisbursementBatchType = 'LEADERSHIP' | 'RANK' | 'ACHIEVEMENT';
 export type DisbursementBatchStatus =
   | 'FUNDING'
   | 'DISPERSING'
@@ -74,7 +74,7 @@ const DisbursementBatchSchema: Schema = new Schema(
   {
     type: {
       type: String,
-      enum: ['LEADERSHIP', 'ACHIEVEMENT'],
+      enum: ['LEADERSHIP', 'RANK', 'ACHIEVEMENT'],
       required: true,
       index: true,
     },

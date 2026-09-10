@@ -10,6 +10,7 @@ export type NotificationType =
   | 'RANK_UP'
   | 'VOUCHER_RECEIVED'
   | 'VOUCHER_REDEEMED'
+  | 'VOUCHER_CLAIMED_BY_OTHER'
   | 'GENERAL';
 
 export interface INotification extends Document {
@@ -42,6 +43,7 @@ const NotificationSchema: Schema = new Schema({
       'RANK_UP',
       'VOUCHER_RECEIVED',
       'VOUCHER_REDEEMED',
+      'VOUCHER_CLAIMED_BY_OTHER',
       'GENERAL',
     ],
     required: true,

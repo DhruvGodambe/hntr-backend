@@ -1,23 +1,30 @@
 /**
- * Moves company wallet onto admin (clears it from any other user first).
+ * Moves the security wallet address onto the admin user row (clears it from any
+ * other user first). DB only — no private key, no on-chain tx.
  *
- *   npx tsx src/scripts/set-admin-company-wallet.ts
+ *   npx tsx src/scripts/set-admin-security-wallet.ts [0x<address>]
+ *
+ * With no arg the address is read from the on-chain securityWallet().
  */
 import mongoose from 'mongoose';
 import { ethers } from 'ethers';
 import { connectDB } from '../config/db';
-import { ENV } from '../config/env';
+import { hntrContract } from '../services/contract.service';
 import User from '../models/User';
 
 const ADMIN_USERNAME = 'admin';
 
 async function main() {
   try {
-    if (!ENV.COMPANY_WALLET_PRIVATE_KEY) {
-      throw new Error('COMPANY_WALLET_PRIVATE_KEY is not set');
+    const argAddr = process.argv[2];
+    const securityWalletAddr = (
+      argAddr && ethers.isAddress(argAddr)
+        ? argAddr
+        : String(await hntrContract.securityWallet())
+    ).toLowerCase();
+    if (!ethers.isAddress(securityWalletAddr)) {
+      throw new Error('Could not resolve the security wallet address (pass it as the first arg)');
     }
-
-    const companyWallet = new ethers.Wallet(ENV.COMPANY_WALLET_PRIVATE_KEY).address.toLowerCase();
     await connectDB();
 
     const admin = await User.findOne({ username: ADMIN_USERNAME });
@@ -26,21 +33,21 @@ async function main() {
     }
 
     const previousOwner = await User.findOne({
-      walletAddress: companyWallet,
+      walletAddress: securityWalletAddr,
       username: { $ne: ADMIN_USERNAME },
     });
 
     if (previousOwner) {
-      // Free the unique wallet index so admin can take the company address.
+      // Free the unique wallet index so admin can take the security address.
       previousOwner.walletAddress = undefined as any;
       previousOwner.set('walletAddress', undefined);
       await previousOwner.updateOne({ $unset: { walletAddress: 1 } });
       console.log(
-        `Cleared company wallet from previous owner: username=${previousOwner.username} _id=${previousOwner._id}`,
+        `Cleared security wallet from previous owner: username=${previousOwner.username} _id=${previousOwner._id}`,
       );
     }
 
-    admin.walletAddress = companyWallet;
+    admin.walletAddress = securityWalletAddr;
     await admin.save();
 
     const refreshed = await User.findOne({ username: ADMIN_USERNAME }).lean();
@@ -63,7 +70,7 @@ async function main() {
           previousWalletOwner: previousOwner
             ? { username: previousOwner.username, _id: previousOwner._id }
             : null,
-          companyWallet,
+          securityWalletAddr,
         },
         null,
         2,

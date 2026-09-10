@@ -36,6 +36,11 @@ router.post(
   requireAdminPrivileged,
   AdminPanelController.recordMembershipOverride,
 );
+router.post(
+  '/users/:username/execute-membership-override',
+  requireAdminPrivileged,
+  AdminPanelController.executeMembershipOverride,
+);
 
 // Transactions & wallets
 router.get('/transactions', AdminPanelController.getTransactions);
@@ -52,9 +57,8 @@ router.get('/reports/rank-bonuses', AdminPanelController.getRankBonusReport);
 
 // Overdue commissions — list is read-only; withdraws are signed in admin UI via ConnectKit
 router.get('/commissions/overdue', AdminPanelController.getOverdueCommissions);
-router.get('/company-wallet', AdminPanelController.getCompanyWallet);
-router.post('/commissions/claim', requireAdminPrivileged, AdminPanelController.claimCommissions);
-router.post('/commissions/record-withdraw', requireAdminPrivileged, AdminPanelController.recordCompanyWithdraw);
+router.get('/security-wallet', AdminPanelController.getSecurityWallet);
+router.post('/commissions/record-withdraw', requireAdminPrivileged, AdminPanelController.recordSecurityWithdraw);
 
 // Volume recalc
 router.post('/volumes/recalculate', requireAdminPrivileged, AdminPanelController.recalculateVolumes);
