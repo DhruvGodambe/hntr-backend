@@ -57,7 +57,9 @@ function getTierLadderIndex(tier: string | null | undefined): number {
 const TX_TYPE_MAP: Record<string, string[]> = {
   all: [],
   commissions: ['COMMISSION_EARNED', 'COMMISSION_CLAIM', 'COMMISSION_WITHDRAWN', 'UNCLAIMED_WITHDRAWN'],
-  purchases: ['PURCHASE', 'UPGRADE', 'VOUCHER_MEMBERSHIP_REDEEM', 'MEMBERSHIP_OVERRIDE'],
+  purchases: ['PURCHASE', 'UPGRADE'],
+  gift_redemptions: ['VOUCHER_MEMBERSHIP_REDEEM'],
+  membership_overrides: ['MEMBERSHIP_OVERRIDE'],
   withdrawals: ['COMMISSION_WITHDRAWN', 'UNCLAIMED_WITHDRAWN', 'COMMISSION_CLAIM'],
 };
 
