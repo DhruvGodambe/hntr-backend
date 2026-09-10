@@ -17,6 +17,11 @@ export interface AdminAuthResult {
   adminId: string;
 }
 
+/** Returned when the password is correct but the account has 2FA and no (valid) code was supplied. */
+export interface AdminTotpChallenge {
+  requiresTotp: true;
+}
+
 export class AdminAuthService {
   /** Legacy env password check — kept for backward compatibility. */
   static verifyPassword(password: string): boolean {
@@ -50,7 +55,11 @@ export class AdminAuthService {
     return Boolean(ENV.ADMIN_PASSWORD) || ENV.ADMIN_DB_AUTH !== 'false';
   }
 
-  static async authenticateWithDatabase(username: string, password: string): Promise<AdminAuthResult | null> {
+  static async authenticateWithDatabase(
+    username: string,
+    password: string,
+    totpCode?: string,
+  ): Promise<AdminAuthResult | AdminTotpChallenge | null> {
     const normalized = normalizeAdminUsername(username);
     const account = await AdminAccountService.findByUsername(normalized);
 
@@ -66,6 +75,19 @@ export class AdminAuthService {
     if (!valid) {
       await AdminAccountService.recordFailedLogin(account);
       return null;
+    }
+
+    if (account.totpEnabled) {
+      const code = typeof totpCode === 'string' ? totpCode.trim() : '';
+      if (!code) {
+        // Password is correct but the 2FA step hasn't happened yet. Don't count
+        // this as a failed attempt — just ask the client to collect a code.
+        return { requiresTotp: true };
+      }
+      if (!account.totpSecret || !(await AdminAccountService.verifyTotpCode(account.totpSecret, code))) {
+        await AdminAccountService.recordFailedLogin(account);
+        return null;
+      }
     }
 
     await AdminAccountService.recordSuccessfulLogin(account);

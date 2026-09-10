@@ -74,6 +74,9 @@ export const adminApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 300, keyP
 /** Public CoinGecko / OpenSea proxies. Homepage fires many OpenSea calls at once. */
 export const marketApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'market-api' });
 
+/** Public "verify you are human" site-gate check. A real visitor calls this once. */
+export const turnstileVerifyRateLimit = rateLimit({ windowMs: 5 * 60 * 1000, max: 20, keyPrefix: 'turnstile-verify' });
+
 /** Authenticated user/network reads — limits wallet/username enumeration. */
 export const userApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'user-api' });
 

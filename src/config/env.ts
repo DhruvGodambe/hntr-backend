@@ -99,6 +99,10 @@ export const ENV = {
   // Required to create additional admin accounts after the first bootstrap account.
   ADMIN_SETUP_SECRET: readEnv('ADMIN_SETUP_SECRET'),
   ADMIN_TOKEN_TTL_SECONDS: Number(readEnv('ADMIN_TOKEN_TTL_SECONDS', '3600')),
+  // Cloudflare Turnstile secret key for the "Verify you are human" widget on
+  // login / register. When empty, the server-side check is skipped (dev/Postman).
+  // Get it from Cloudflare dashboard -> Turnstile -> your widget -> Secret Key.
+  TURNSTILE_SECRET: readEnv('TURNSTILE_SECRET'),
 
   // Gift-code crypto + redeem links. REQUIRED for issue/reveal/redeem URL building.
   // Pepper: any long random string. Enc key: 32-byte key as hex (64 chars) or base64.

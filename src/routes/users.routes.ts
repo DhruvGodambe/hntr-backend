@@ -2,11 +2,12 @@ import { Router } from 'express';
 import { UserController } from '../controllers/user.controller';
 import { requireWalletAuth, requireSelfWallet, requireSelfUsername } from '../middlewares/auth.middleware';
 import { userApiRateLimit } from '../middlewares/rateLimiter.middleware';
+import { verifyTurnstile } from '../middlewares/turnstile.middleware';
 
 const router = Router();
 
 router.get('/sponsor/:username/validate', UserController.validateSponsor);
-router.post('/register', UserController.register);
+router.post('/register', verifyTurnstile, UserController.register);
 
 router.get(
   '/wallet/:walletAddress',
