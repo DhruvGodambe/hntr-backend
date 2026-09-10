@@ -80,6 +80,13 @@ export const turnstileVerifyRateLimit = rateLimit({ windowMs: 5 * 60 * 1000, max
 /** Authenticated user/network reads — limits wallet/username enumeration. */
 export const userApiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, keyPrefix: 'user-api' });
 
+/**
+ * Public, unauthenticated signup lookups (username availability). Generous enough
+ * for typeahead-style checks while a person fills the form, tight enough to blunt
+ * bulk username enumeration.
+ */
+export const publicUserLookupRateLimit = rateLimit({ windowMs: 60 * 1000, max: 40, keyPrefix: 'public-user-lookup' });
+
 // Bearer voucher redemption is the brute-force surface. Paired with a persisted
 // per-wallet/per-IP lockout in Mongo (VoucherRedeemAttempt) so a restart or an IP
 // rotation does not reset it.
