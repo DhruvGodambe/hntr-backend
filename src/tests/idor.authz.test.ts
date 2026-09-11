@@ -45,6 +45,7 @@ vi.mock('../controllers/user.controller', () => ({
     },
     getProfile: stubOk,
     getProfileByWallet: stubOk,
+    updateFullName: stubOk,
   },
 }));
 
@@ -85,13 +86,14 @@ function mixedCaseWallet(address: string): string {
 
 type LockedRoute = {
   name: string;
-  method: 'get' | 'post';
+  method: 'get' | 'post' | 'patch';
   path: (identity: string) => string;
   kind: 'wallet' | 'username';
 };
 
 const lockedRoutes: LockedRoute[] = [
   { name: 'GET /api/users/wallet/:walletAddress', method: 'get', kind: 'wallet', path: (id) => `/api/users/wallet/${id}` },
+  { name: 'PATCH /api/users/wallet/:walletAddress/full-name', method: 'patch', kind: 'wallet', path: (id) => `/api/users/wallet/${id}/full-name` },
   { name: 'GET /api/users/:username', method: 'get', kind: 'username', path: (id) => `/api/users/${id}` },
   { name: 'GET /api/network/:walletAddress/points', method: 'get', kind: 'wallet', path: (id) => `/api/network/${id}/points` },
   { name: 'GET /api/network/transactions/:walletAddress', method: 'get', kind: 'wallet', path: (id) => `/api/network/transactions/${id}` },
@@ -120,9 +122,10 @@ describe('VAPT IDOR / BOLA — owner-only user and network APIs', () => {
     return { Authorization: `Bearer ${token}` };
   }
 
-  function call(method: 'get' | 'post', path: string) {
-    const req = method === 'post' ? request(app).post(path).send({}) : request(app).get(path);
-    return req;
+  function call(method: 'get' | 'post' | 'patch', path: string) {
+    if (method === 'post') return request(app).post(path).send({});
+    if (method === 'patch') return request(app).patch(path).send({});
+    return request(app).get(path);
   }
 
   for (const route of lockedRoutes) {
