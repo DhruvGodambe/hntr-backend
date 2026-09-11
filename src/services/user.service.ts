@@ -19,6 +19,7 @@ export class UserError extends Error {
 
 /** Same rule the signup form enforces client-side (lib/signup-validation.ts). */
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
+const FULL_NAME_PATTERN = /^[a-zA-Z\s'.-]+$/;
 
 export class UserService {
   static isRootAdminUser(user: IUser): boolean {
@@ -39,6 +40,29 @@ export class UserService {
       );
     }
     return username;
+  }
+
+  /** Same rule the signup form enforces client-side (lib/signup-validation.ts). */
+  static normalizeFullName(rawFullName: string): string {
+    const fullName = String(rawFullName ?? '').trim().replace(/\s+/g, ' ');
+    if (!fullName) {
+      throw new UserError('FULL_NAME_REQUIRED', 'Full name is required.', 400);
+    }
+    if (fullName.length < 3 || fullName.length > 80) {
+      throw new UserError('FULL_NAME_INVALID', 'Full name must be between 3 and 80 characters.', 400);
+    }
+    if (
+      !FULL_NAME_PATTERN.test(fullName) ||
+      !/^[a-zA-Z]/.test(fullName) ||
+      !/[a-zA-Z]$/.test(fullName)
+    ) {
+      throw new UserError(
+        'FULL_NAME_INVALID',
+        'Enter your name using letters, spaces, hyphens, apostrophes, or periods only.',
+        400,
+      );
+    }
+    return fullName;
   }
 
   /** True when a username is already registered (case-insensitive). */
@@ -196,6 +220,20 @@ export class UserService {
 
   static async getUserByWallet(walletAddress: string): Promise<IUser | null> {
     return User.findOne({ walletAddress: walletAddress.toLowerCase() });
+  }
+
+  /** Self-service profile edit: only the full name is mutable post-registration. */
+  static async updateFullName(walletAddress: string, rawFullName: string): Promise<IUser> {
+    const fullName = this.normalizeFullName(rawFullName);
+    const user = await User.findOneAndUpdate(
+      { walletAddress: walletAddress.toLowerCase() },
+      { fullName },
+      { new: true },
+    );
+    if (!user) {
+      throw new UserError('USER_NOT_FOUND', 'User not found.', 404);
+    }
+    return user;
   }
 
   static async syncUserTierWithBlockchain(user: IUser): Promise<IUser> {

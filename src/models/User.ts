@@ -9,6 +9,7 @@ export interface IUser extends Document {
   type: UserAccountType;
   email?: string;
   phone?: string;
+  fullName?: string;
   sponsorUsername?: string | null;
   ancestors: string[];
   directDownline: string[];
@@ -72,6 +73,10 @@ const UserSchema: Schema = new Schema({
   },
   phone: {
     type: String,
+  },
+  fullName: {
+    type: String,
+    trim: true,
   },
   sponsorUsername: {
     type: String,

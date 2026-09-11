@@ -78,6 +78,17 @@ export class UserController {
     }
   }
 
+  static async updateFullName(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { walletAddress } = req.params;
+      const { fullName } = req.body;
+      const user = await UserService.updateFullName(String(walletAddress ?? ''), String(fullName ?? ''));
+      sendSuccess(res, { profile: user }, 'Full name updated successfully');
+    } catch (error) {
+      handleUserError(res, error, next);
+    }
+  }
+
   static async getProfileByWallet(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { walletAddress } = req.params;

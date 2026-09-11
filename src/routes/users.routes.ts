@@ -18,6 +18,14 @@ router.get(
   UserController.getProfileByWallet,
 );
 
+router.patch(
+  '/wallet/:walletAddress/full-name',
+  userApiRateLimit,
+  requireWalletAuth,
+  requireSelfWallet('walletAddress'),
+  UserController.updateFullName,
+);
+
 /** Authenticated username typeahead (gift-code share, etc.). Must be before /:username. */
 router.get('/search', userApiRateLimit, requireWalletAuth, UserController.searchUsernames);
 
