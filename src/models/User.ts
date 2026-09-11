@@ -70,6 +70,11 @@ const UserSchema: Schema = new Schema({
   },
   email: {
     type: String,
+    unique: true,
+    sparse: true, // skip the unique index for docs with no email (admin root, legacy rows)
+    index: true,
+    lowercase: true,
+    trim: true,
   },
   phone: {
     type: String,

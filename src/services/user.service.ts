@@ -19,7 +19,8 @@ export class UserError extends Error {
 
 /** Same rule the signup form enforces client-side (lib/signup-validation.ts). */
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
-const FULL_NAME_PATTERN = /^[a-zA-Z\s'.-]+$/;
+/** Same rule the signup form enforces client-side (lib/signup-validation.ts validateEmail). */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export class UserService {
   static isRootAdminUser(user: IUser): boolean {
@@ -69,6 +70,28 @@ export class UserService {
   static async isUsernameTaken(username: string): Promise<boolean> {
     const existing = await User.findOne({
       username: new RegExp(`^${escapeRegex(username)}$`, 'i'),
+    })
+      .select({ _id: 1 })
+      .lean();
+    return Boolean(existing);
+  }
+
+  /** Normalise + format-check an email. Throws UserError on an invalid shape. */
+  static normalizeEmail(rawEmail: string): string {
+    const email = String(rawEmail ?? '').trim().toLowerCase();
+    if (!email) {
+      throw new UserError('EMAIL_REQUIRED', 'Email address is required.', 400);
+    }
+    if (!EMAIL_PATTERN.test(email)) {
+      throw new UserError('EMAIL_INVALID', 'Enter a valid email address.', 400);
+    }
+    return email;
+  }
+
+  /** True when an email is already registered (case-insensitive). */
+  static async isEmailTaken(email: string): Promise<boolean> {
+    const existing = await User.findOne({
+      email: new RegExp(`^${escapeRegex(email)}$`, 'i'),
     })
       .select({ _id: 1 })
       .lean();
@@ -129,8 +152,9 @@ export class UserService {
     phone: string;
     sponsorUsername?: string;
   }): Promise<IUser> {
-    const { walletAddress, email, phone, sponsorUsername } = data;
+    const { walletAddress, phone, sponsorUsername } = data;
     const username = this.normalizeUsername(data.username);
+    const email = this.normalizeEmail(data.email);
 
     // A username registered once must never be re-created — a second registerUser
     // for the same name would push it into a sponsor's directDownline before the
@@ -139,6 +163,11 @@ export class UserService {
     // case-sensitive and would let them through).
     if (await this.isUsernameTaken(username)) {
       throw new UserError('USERNAME_TAKEN', 'That username is already registered.', 409);
+    }
+
+    // Same guard for email: one inbox shouldn't be able to open multiple accounts.
+    if (await this.isEmailTaken(email)) {
+      throw new UserError('EMAIL_TAKEN', 'That email address is already registered.', 409);
     }
 
     let ancestors: string[] = [];

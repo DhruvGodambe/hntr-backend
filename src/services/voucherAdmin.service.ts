@@ -193,10 +193,22 @@ export class VoucherAdminService {
     if (query.walletAddress) filter.walletAddress = String(query.walletAddress).toLowerCase();
     if (query.token) filter.token = String(query.token).toUpperCase();
 
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       VoucherLedger.find(filter).sort({ timestamp: -1 }).skip(skip).limit(limit).lean(),
       VoucherLedger.countDocuments(filter),
     ]);
+
+    const walletAddresses = [...new Set(rows.map((r) => r.walletAddress.toLowerCase()))];
+    const users = walletAddresses.length
+      ? await User.find({ walletAddress: { $in: walletAddresses } }).select('walletAddress username').lean()
+      : [];
+    const usernameByWallet = new Map(users.map((u) => [u.walletAddress.toLowerCase(), u.username]));
+
+    const items = rows.map((r) => ({
+      ...r,
+      username: usernameByWallet.get(r.walletAddress.toLowerCase()) ?? null,
+    }));
+
     return paginatedResponse(items, total, page, limit);
   }
 
