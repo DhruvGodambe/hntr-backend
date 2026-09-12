@@ -675,7 +675,10 @@ export class BlockchainService {
     // Log it as its own transaction type (not a purchase, not a commission) so the
     // admin/member transaction lists show "Membership Override" rather than
     // mislabeling it, and so it has a row to attach an HNTR-points award to.
-    const amountUsd = TIER_VOLUMES[tierStr as Tier] ?? 0;
+    // Prorate against the tier the member is being moved from, same as a
+    // self-service upgrade, so an override doesn't double-charge/double-award
+    // for tier value the member already paid for.
+    const amountUsd = Math.max(0, this.getTierCost(tierStr) - this.getTierCost(previousTier));
     try {
       const existing = await Transaction.findOne({
         txHash: normalizedHash,
