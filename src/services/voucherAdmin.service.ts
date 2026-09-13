@@ -12,6 +12,7 @@ import { VoucherService, VoucherError } from './voucher.service';
 import { VoucherToken } from '../constants';
 import { parsePagination, paginatedResponse, sanitizeSearch } from '../utils/pagination';
 import { logger } from '../utils/logger';
+import * as code from '../utils/voucherCode';
 
 export class VoucherAdminService {
   // ── accounts ─────────────────────────────────────────────────────────────
@@ -158,6 +159,7 @@ export class VoucherAdminService {
     ]);
     const items = rows.map((v) => ({
       voucherId: v.voucherId,
+      code: this.safeDecrypt(v.voucherId, v.codeCipher),
       codeLast4: v.codeLast4,
       issuerUsername: v.issuerUsername,
       issuerWallet: v.issuerWallet,
@@ -270,6 +272,7 @@ export class VoucherAdminService {
         if (r.repaired) repaired += 1;
       }
     }
+
     await VoucherAdminAudit.create({
       adminUsername,
       action: 'RECONCILE_BALANCE',
@@ -324,6 +327,15 @@ export class VoucherAdminService {
     } catch (err: any) {
       logger.warn(`ownerWallet read failed: ${err.message}`);
       return { address: null };
+    }
+  }
+
+  private static safeDecrypt(voucherId: string, packed: string): string | null {
+    try {
+      return code.decrypt(packed);
+    } catch (err: any) {
+      logger.warn(`Failed to decrypt voucher code for ${voucherId}: ${err.message}`);
+      return null;
     }
   }
 }
