@@ -74,17 +74,30 @@ export class VoucherService {
     const wallet = walletAddress.toLowerCase();
     const account = await VoucherAccount.findOne({ walletAddress: wallet });
     const user = await UserService.getUserByWallet(wallet);
-    const [redeemedAgg] = await Voucher.aggregate([
-      { $match: { issuerWallet: wallet, status: 'REDEEMED' } },
-      { $group: { _id: null, count: { $sum: 1 }, totalUsd: { $sum: '$amountUsd' } } },
+
+    const statusAgg: { _id: string; count: number; totalUsd: number }[] = await Voucher.aggregate([
+      { $match: { issuerWallet: wallet } },
+      { $group: { _id: '$status', count: { $sum: 1 }, totalUsd: { $sum: '$amountUsd' } } },
     ]);
+    const byStatus = new Map(statusAgg.map((row) => [row._id, row]));
+    const countOf = (status: string) => byStatus.get(status)?.count ?? 0;
+    const totalCount = statusAgg.reduce((sum, row) => sum + row.count, 0);
+
     return {
       enabled: !!account?.enabled,
       username: user?.username ?? account?.username ?? null,
       balances: await getBalances(wallet),
       redeemed: {
-        count: redeemedAgg?.count ?? 0,
-        totalUsd: redeemedAgg?.totalUsd ?? 0,
+        count: countOf('REDEEMED'),
+        totalUsd: byStatus.get('REDEEMED')?.totalUsd ?? 0,
+      },
+      // Matches the "Codes Status" filter tabs (all/active/redeemed/expired) 1:1
+      // so the UI never has to derive counts from a status-filtered, paginated list.
+      counts: {
+        all: totalCount,
+        active: countOf('ACTIVE'),
+        redeemed: countOf('REDEEMED'),
+        expired: countOf('EXPIRED'),
       },
       expiryDays: VOUCHER_EXPIRY_DAYS,
       tiers: VOUCHER_TIERS.map((t) => ({ name: t.tier, valueUsd: t.valueUsd })),
