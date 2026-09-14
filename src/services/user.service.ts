@@ -21,6 +21,8 @@ export class UserError extends Error {
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
 /** Same rule the signup form enforces client-side (lib/signup-validation.ts validateEmail). */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Same rule the signup form enforces client-side (lib/signup-validation.ts FULL_NAME_ALLOWED). */
+const FULL_NAME_PATTERN = /^[a-zA-Z\s'.-]+$/;
 
 export class UserService {
   static isRootAdminUser(user: IUser): boolean {
