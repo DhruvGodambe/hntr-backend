@@ -661,6 +661,24 @@ export class BlockchainService {
       return;
     }
 
+    // The admin panel can also drive this same on-chain call directly
+    // (adminPanel.service.ts recordMembershipOverride, via the burner-signer or
+    // connected-wallet flow) and races this event listener to process it first.
+    // Whichever side gets here first — and creates the Transaction row below — is
+    // authoritative for the tier diff/points; check before mutating anything so the
+    // loser doesn't diff against an already-updated user.tier and compute $0.
+    const existing = await Transaction.findOne({
+      txHash: normalizedHash,
+      walletAddress: normalizedWallet,
+      type: 'MEMBERSHIP_OVERRIDE',
+    });
+    if (existing) {
+      logger.info(
+        `MembershipTierOverriden: ${user.username} already recorded for tx=${normalizedHash}, skipping duplicate processing`,
+      );
+      return;
+    }
+
     const previousTier = user.tier;
     user.tier = tierStr as any;
     user.isForcedMembership = true;
@@ -680,22 +698,15 @@ export class BlockchainService {
     // for tier value the member already paid for.
     const amountUsd = Math.max(0, this.getTierCost(tierStr) - this.getTierCost(previousTier));
     try {
-      const existing = await Transaction.findOne({
+      await Transaction.create({
         txHash: normalizedHash,
         walletAddress: normalizedWallet,
         type: 'MEMBERSHIP_OVERRIDE',
+        tier: tierStr,
+        amount: amountUsd,
+        status: 'CONFIRMED',
+        timestamp: new Date(),
       });
-      if (!existing) {
-        await Transaction.create({
-          txHash: normalizedHash,
-          walletAddress: normalizedWallet,
-          type: 'MEMBERSHIP_OVERRIDE',
-          tier: tierStr,
-          amount: amountUsd,
-          status: 'CONFIRMED',
-          timestamp: new Date(),
-        });
-      }
     } catch (err: any) {
       if (!isDuplicateKeyError(err)) {
         logger.error(`Failed to record MEMBERSHIP_OVERRIDE transaction for ${user.username}: ${err.message}`);
