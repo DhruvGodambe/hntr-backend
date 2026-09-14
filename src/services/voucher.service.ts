@@ -53,6 +53,7 @@ function newVoucherId(): string {
 function publicVoucher(v: IVoucher) {
   return {
     voucherId: v.voucherId,
+    code: code.decrypt(v.codeCipher),
     codeLast4: v.codeLast4,
     tier: v.tier,
     amountUsd: v.amountUsd,
