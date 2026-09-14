@@ -29,6 +29,7 @@ export const contractABI = [
   'function lockedCommissions(address, address) view returns (uint256)',
   'function lastClaimedAt(address, address) view returns (uint256)',
   'function levelPercentages(uint256) view returns (uint256)',
+  'function totalLevelPercentage() view returns (uint256)',
   'function tierRequiredForLevel(uint256) view returns (uint8)',
   'function rankRequiredForLevel(uint256) view returns (uint8)',
   'function CLAIM_GRACE_PERIOD() view returns (uint256)',
@@ -65,7 +66,11 @@ export const contractABI = [
   'function acceptOwnership()',
 
   'function overrideMembershipTier(address user, uint8 tier)',
-  
+
+  // --- Owner or burner wallet: tier prices + unilevel commission percentages ---
+  'function setTierPrice(uint8 tier, uint256 newPrice)',
+  'function setLevelPercentage(uint256 level, uint256 newPercent)',
+
   'function setBurnerWallet(address _burnerWallet)',
   'function burnerWallet() view returns (address)',
   'function voucherRedeemed(bytes32 voucherId) view returns (bool)',
@@ -99,6 +104,8 @@ export const contractABI = [
   'event CommissionSeeded(address indexed user, address indexed token, uint256 withdrawable, uint256 locked, uint256 lastClaimed)',
   'event BootstrapSealed()',
   'event MembershipTierOverriden(address indexed user, uint8 tier, uint256 joinedAt)',
+  'event TierPriceUpdated(uint8 indexed tier, uint256 oldPrice, uint256 newPrice)',
+  'event LevelPercentageUpdated(uint256 indexed level, uint256 oldPercent, uint256 newPercent)',
   'event BurnerWalletUpdated(address burnerWallet)',
   'event VoucherRedeemed(address indexed user, bytes32 indexed voucherId, uint8 oldTier, uint8 newTier, uint256 joinedAt)',
 
