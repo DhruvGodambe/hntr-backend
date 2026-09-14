@@ -40,12 +40,16 @@ export class VoucherController {
 
   static async issue(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { tier, token, note } = req.body;
+      const { tier, token, note, redeemerUsername } = req.body;
       if (!tier || !token) {
         sendError(res, 'tier and token are required', 400);
         return;
       }
-      const result = await VoucherService.issue(req.walletAddress!, { tier, token, note });
+      if (!redeemerUsername) {
+        sendError(res, 'redeemerUsername is required', 400);
+        return;
+      }
+      const result = await VoucherService.issue(req.walletAddress!, { tier, token, note, redeemerUsername });
       sendSuccess(res, result, 'Gift code created');
     } catch (error) {
       handle(res, error, next);
