@@ -17,8 +17,10 @@ export class UserError extends Error {
   }
 }
 
-/** Same rule the signup form enforces client-side (lib/signup-validation.ts). */
-const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,20}$/;
+/** Same rule the signup form enforces client-side (lib/signup-validation.ts validateNewUsername).
+ *  Only ever applied to a brand-new username being created — never to a sponsor lookup,
+ *  which may reference an existing username that predates this letters-only rule. */
+const USERNAME_PATTERN = /^[a-zA-Z]{3,20}$/;
 /** Same rule the signup form enforces client-side (lib/signup-validation.ts validateEmail). */
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /** Same rule the signup form enforces client-side (lib/signup-validation.ts FULL_NAME_ALLOWED). */
@@ -38,7 +40,7 @@ export class UserService {
     if (!USERNAME_PATTERN.test(username)) {
       throw new UserError(
         'USERNAME_INVALID',
-        'Username must be 3–20 characters and use letters, numbers, or underscores only.',
+        'Username must be 3–20 letters only (no numbers, symbols, or spaces).',
         400,
       );
     }
