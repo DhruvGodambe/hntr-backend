@@ -12,6 +12,7 @@ import { VoucherService, VoucherError } from './voucher.service';
 import { VoucherToken } from '../constants';
 import { parsePagination, paginatedResponse, sanitizeSearch } from '../utils/pagination';
 import { logger } from '../utils/logger';
+import * as code from '../utils/voucherCode';
 
 export class VoucherAdminService {
   // ── accounts ─────────────────────────────────────────────────────────────
@@ -156,22 +157,31 @@ export class VoucherAdminService {
       Voucher.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       Voucher.countDocuments(filter),
     ]);
-    const items = rows.map((v) => ({
-      voucherId: v.voucherId,
-      codeLast4: v.codeLast4,
-      issuerUsername: v.issuerUsername,
-      issuerWallet: v.issuerWallet,
-      tier: v.tier,
-      amountUsd: v.amountUsd,
-      token: v.token,
-      status: v.status,
-      note: v.note ?? null,
-      createdAt: v.createdAt,
-      expiresAt: v.expiresAt,
-      redeemedAt: v.redeemedAt ?? null,
-      redeemerUsername: v.redeemerUsername ?? null,
-      txHash: v.txHash ?? null,
-    }));
+    const items = rows.map((v) => {
+      let plainCode: string | null = null;
+      try {
+        plainCode = code.decrypt(v.codeCipher);
+      } catch (err: any) {
+        logger.warn(`admin voucher code decrypt failed for ${v.voucherId}: ${err.message}`);
+      }
+      return {
+        voucherId: v.voucherId,
+        code: plainCode,
+        codeLast4: v.codeLast4,
+        issuerUsername: v.issuerUsername,
+        issuerWallet: v.issuerWallet,
+        tier: v.tier,
+        amountUsd: v.amountUsd,
+        token: v.token,
+        status: v.status,
+        note: v.note ?? null,
+        createdAt: v.createdAt,
+        expiresAt: v.expiresAt,
+        redeemedAt: v.redeemedAt ?? null,
+        redeemerUsername: v.redeemerUsername ?? null,
+        txHash: v.txHash ?? null,
+      };
+    });
     return paginatedResponse(items, total, page, limit);
   }
 
