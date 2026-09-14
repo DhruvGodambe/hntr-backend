@@ -35,6 +35,13 @@ export interface IVoucher extends Document {
   note?: string;
 
   /**
+   * Lowercased username this code is reserved for — set at issue time. Only that
+   * account can redeem it; everyone else's attempt is rejected even with the code
+   * in hand. Vouchers are no longer bearer codes (see redeem() in voucher.service.ts).
+   */
+  restrictedUsername: string;
+
+  /**
    * Bearer code: whoever redeems it first gets it, no matter how many people it
    * was sent to. Tracked so re-sharing the same recipient set is idempotent (no
    * duplicate notifications) and so the other recipients can be told the code is
@@ -91,6 +98,7 @@ const VoucherSchema: Schema = new Schema(
       default: 'ACTIVE',
     },
     note: { type: String, maxlength: 64 },
+    restrictedUsername: { type: String, required: true, lowercase: true, index: true },
 
     sharedWith: {
       type: [

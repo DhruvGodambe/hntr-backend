@@ -60,6 +60,7 @@ function publicVoucher(v: IVoucher) {
     token: v.token,
     status: v.status,
     note: v.note ?? null,
+    restrictedUsername: v.restrictedUsername ?? null,
     createdAt: v.createdAt,
     expiresAt: v.expiresAt,
     redeemedAt: v.redeemedAt ?? null,
@@ -129,7 +130,7 @@ export class VoucherService {
   // ── issue ─────────────────────────────────────────────────────────────────
   static async issue(
     walletAddress: string,
-    input: { tier: string; token: string; note?: string },
+    input: { tier: string; token: string; note?: string; redeemerUsername: string },
   ) {
     const wallet = walletAddress.toLowerCase();
     const account = await this.assertEnabled(wallet);
@@ -142,6 +143,18 @@ export class VoucherService {
     const token = String(input.token || '').toUpperCase() as VoucherToken;
     if (token !== 'USDT' && token !== 'USDC') {
       throw new VoucherError('UNSUPPORTED_TOKEN', 'token must be USDT or USDC');
+    }
+
+    const redeemerUsername = String(input.redeemerUsername || '').trim().replace(/^@/, '');
+    if (!redeemerUsername) {
+      throw new VoucherError('REDEEMER_REQUIRED', 'Enter the username of the person who will redeem this code.');
+    }
+    const redeemer = await UserService.getUserByUsername(redeemerUsername);
+    if (!redeemer?.walletAddress) {
+      throw new VoucherError('REDEEMER_NOT_FOUND', `No member found with username ${redeemerUsername}.`);
+    }
+    if (redeemer.walletAddress.toLowerCase() === wallet) {
+      throw new VoucherError('REDEEMER_IS_ISSUER', 'You cannot issue a gift code to yourself.');
     }
 
     const amountUsd = TIER_VOLUMES[tierName];
@@ -178,6 +191,7 @@ export class VoucherService {
         token,
         status: 'ACTIVE',
         note,
+        restrictedUsername: redeemer.username.toLowerCase(),
         expiresAt: new Date(Date.now() + VOUCHER_EXPIRY_DAYS * 86400 * 1000),
         redeemAttempts: 0,
       });
@@ -194,6 +208,15 @@ export class VoucherService {
       throw err;
     }
 
+    await NotificationService.createQuiet({
+      walletAddress: redeemer.walletAddress,
+      type: 'VOUCHER_RECEIVED',
+      title: `${tierName} membership gift code`,
+      sub: `${account.username} sent you a ${tierName} membership voucher, reserved for your account. Redeem it before it expires.`,
+      link: 'REDEEM NOW',
+      meta: { voucherId, tier: tierName, redeemUrl: code.redeemUrl(plaintext), from: account.username, expiresAt: voucher.expiresAt },
+    });
+
     return {
       voucherId,
       code: plaintext,
@@ -201,6 +224,7 @@ export class VoucherService {
       tier: tierName,
       amountUsd,
       token,
+      redeemerUsername: redeemer.username,
       expiresAt: voucher.expiresAt,
       balanceAfter: debit.balanceAfter,
     };
@@ -373,6 +397,18 @@ export class VoucherService {
         'USER_NOT_REGISTERED',
         'Create your account first, then redeem the code.',
         409,
+      );
+    }
+
+    // Reserved to a single account at issue time — not a bearer code. Codes issued
+    // before this restriction existed have no restrictedUsername and stay bearer.
+    if (claimed.restrictedUsername && claimed.restrictedUsername !== user.username.toLowerCase()) {
+      await this.releaseClaim(claimed);
+      await this.recordFailure(wallet, ip);
+      throw new VoucherError(
+        'NOT_AUTHORIZED_REDEEMER',
+        'This gift code is reserved for another account.',
+        403,
       );
     }
 

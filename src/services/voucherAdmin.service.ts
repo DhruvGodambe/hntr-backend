@@ -175,6 +175,7 @@ export class VoucherAdminService {
         token: v.token,
         status: v.status,
         note: v.note ?? null,
+        restrictedUsername: v.restrictedUsername ?? null,
         createdAt: v.createdAt,
         expiresAt: v.expiresAt,
         redeemedAt: v.redeemedAt ?? null,
