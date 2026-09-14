@@ -73,10 +73,18 @@ export class VoucherService {
     const wallet = walletAddress.toLowerCase();
     const account = await VoucherAccount.findOne({ walletAddress: wallet });
     const user = await UserService.getUserByWallet(wallet);
+    const [redeemedAgg] = await Voucher.aggregate([
+      { $match: { issuerWallet: wallet, status: 'REDEEMED' } },
+      { $group: { _id: null, count: { $sum: 1 }, totalUsd: { $sum: '$amountUsd' } } },
+    ]);
     return {
       enabled: !!account?.enabled,
       username: user?.username ?? account?.username ?? null,
       balances: await getBalances(wallet),
+      redeemed: {
+        count: redeemedAgg?.count ?? 0,
+        totalUsd: redeemedAgg?.totalUsd ?? 0,
+      },
       expiryDays: VOUCHER_EXPIRY_DAYS,
       tiers: VOUCHER_TIERS.map((t) => ({ name: t.tier, valueUsd: t.valueUsd })),
     };
