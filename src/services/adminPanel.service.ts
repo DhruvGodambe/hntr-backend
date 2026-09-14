@@ -11,6 +11,8 @@ import DisbursementBatch from '../models/DisbursementBatch';
 import { RewardsService } from './rewards.service';
 import { NetworkService } from './network.service';
 import { SecurityWalletService } from './securityWallet.service';
+import { PointsService } from './points.service';
+import { Tier, TIER_VOLUMES } from '../constants';
 import {
   hntrContract,
   hntrContractWithBurnerSigner,
@@ -668,6 +670,49 @@ export class AdminPanelService {
       { $set: { tierOverride: onChainTier } },
       { upsert: true, new: true },
     );
+
+    // Record the Transaction + points here, using the previousTier captured above
+    // before user.tier was mutated. The on-chain event listener
+    // (blockchain.service.ts handleMembershipTierOverriden) also reacts to this same
+    // tx, but by the time it runs, user.tier may already equal onChainTier — diffing
+    // against a live (already-mutated) tier would wrongly compute $0. Doing the diff
+    // here, and having the event listener skip once this Transaction exists, avoids
+    // that race regardless of which handler wins it.
+    const normalizedHash = txHash.toLowerCase();
+    const amountUsd = Math.max(
+      0,
+      (TIER_VOLUMES[onChainTier as Tier] || 0) - (TIER_VOLUMES[previousTier as Tier] || 0),
+    );
+    try {
+      const existing = await Transaction.findOne({
+        txHash: normalizedHash,
+        walletAddress: wallet,
+        type: 'MEMBERSHIP_OVERRIDE',
+      });
+      if (!existing) {
+        await Transaction.create({
+          txHash: normalizedHash,
+          walletAddress: wallet,
+          type: 'MEMBERSHIP_OVERRIDE',
+          tier: onChainTier,
+          amount: amountUsd,
+          status: 'CONFIRMED',
+          timestamp: new Date(),
+        });
+      }
+    } catch (err: unknown) {
+      logger.error(
+        `Failed to record MEMBERSHIP_OVERRIDE transaction for ${username}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+
+    try {
+      await PointsService.awardPoints(wallet, 'MEMBERSHIP_OVERRIDE', amountUsd, normalizedHash);
+    } catch (err: unknown) {
+      logger.error(
+        `Failed to award points for membership override ${normalizedHash}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
 
     logger.info(
       `Recorded membership override for ${username}: ${previousTier} -> ${onChainTier} (forced, tx=${txHash})`,
