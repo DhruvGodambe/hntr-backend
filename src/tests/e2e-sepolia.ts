@@ -108,7 +108,7 @@ async function runFullCommissionFlow() {
   console.log("\n--- SETTING UP UPLINE TIERS ---");
   
   console.log(`⏳ Owner buying Diamond (Tier 5) so they can receive commissions...`);
-  await (await usdtContract.approve(CONTRACT_ADDRESS, ethers.parseUnits("2000", 6))).wait();
+  await (await usdtContract.approve(CONTRACT_ADDRESS, ethers.parseUnits("2500", 6))).wait();
   try {
       await (await liveHntrContract.purchaseMembership(ownerWallet.address, 5, [], [], mockUSDTAddress, 0, "0x")).wait();
   } catch (e) { console.log("Owner already has a tier (or signature required)."); }
