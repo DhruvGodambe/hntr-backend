@@ -34,7 +34,12 @@ export class UserController {
 
   static async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = await UserService.registerUser({ ...req.body, country: countryFromRequest(req) });
+      // Prefer the country the signup form collected (explicit, user-confirmed) over
+      // the IP-based guess — only fall back to geo lookup when the form didn't send one
+      // (e.g. an older cached frontend bundle).
+      const formCountry = String(req.body?.country ?? '').trim().toUpperCase();
+      const country = /^[A-Z]{2}$/.test(formCountry) ? formCountry : countryFromRequest(req);
+      const user = await UserService.registerUser({ ...req.body, country });
       sendSuccess(res, user, 'User registered successfully', 201);
     } catch (error) {
       handleUserError(res, error, next);
