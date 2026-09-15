@@ -39,6 +39,8 @@ export interface IUser extends Document {
   legVolumes: Map<string, number>;
   hntrPoints: number;
   joinedAt: Date;
+  /** ISO 3166-1 alpha-2 code resolved from Cloudflare's cf-ipcountry header at signup. */
+  country?: string;
 }
 
 const UserSchema: Schema = new Schema({
@@ -137,6 +139,10 @@ const UserSchema: Schema = new Schema({
   joinedAt: {
     type: Date,
     default: Date.now,
+  },
+  country: {
+    type: String,
+    uppercase: true,
   },
 });
 

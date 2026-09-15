@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { UserService, UserError } from '../services/user.service';
 import { FeatureGatingService } from '../services/feature-gating.service';
 import { sendSuccess, sendError } from '../utils/response';
+import { countryFromRequest } from '../utils/geo';
 function handleUserError(res: Response, error: unknown, next: NextFunction): void {
   if (error instanceof UserError) {
     sendError(res, error.message, error.statusCode, { code: error.code });
@@ -33,7 +34,7 @@ export class UserController {
 
   static async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = await UserService.registerUser(req.body);
+      const user = await UserService.registerUser({ ...req.body, country: countryFromRequest(req) });
       sendSuccess(res, user, 'User registered successfully', 201);
     } catch (error) {
       handleUserError(res, error, next);

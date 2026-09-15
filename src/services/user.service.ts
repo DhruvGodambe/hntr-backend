@@ -155,8 +155,9 @@ export class UserService {
     email: string;
     phone: string;
     sponsorUsername?: string;
+    country?: string;
   }): Promise<IUser> {
-    const { walletAddress, phone, sponsorUsername } = data;
+    const { walletAddress, phone, sponsorUsername, country } = data;
     const username = this.normalizeUsername(data.username);
     const email = this.normalizeEmail(data.email);
 
@@ -202,6 +203,7 @@ export class UserService {
       rank: Rank.NONE,
       teamVolume: 0,
       legVolumes: {},
+      country,
     });
 
     await newUser.save();

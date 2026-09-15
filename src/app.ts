@@ -13,6 +13,7 @@ import voucherRoutes from './routes/voucher.routes';
 import marketRoutes from './routes/market.routes';
 import poolsRoutes from './routes/pools.routes';
 import turnstileRoutes from './routes/turnstile.routes';
+import activityRoutes from './routes/activity.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -29,6 +30,7 @@ export function createApp(): Express {
   app.use('/api/market', marketRoutes);
   app.use('/api/pools', poolsRoutes);
   app.use('/api/turnstile', turnstileRoutes);
+  app.use('/api/activity', activityRoutes);
   app.use('/api/admin', adminPanelRoutes);
   app.use('/api/admin', adminRoutes);
 
