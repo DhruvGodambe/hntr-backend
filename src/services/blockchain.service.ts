@@ -5,10 +5,10 @@ import SyncState from '../models/SyncState';
 import AdminUserOverride from '../models/AdminUserOverride';
 import { NetworkService } from './network.service';
 import { PointsService } from './points.service';
-import { provider, CONTRACT_ADDRESS, contractABI, getContractAmountDecimals } from './contract.service';
+import { provider, CONTRACT_ADDRESS, contractABI, getContractAmountDecimals, getTierVolumeUsd } from './contract.service';
 import { ENV } from '../config/env';
 import { logger } from '../utils/logger';
-import { Tier, TIER_VOLUMES } from '../constants';
+import { Tier } from '../constants';
 import { NotificationService } from './notification.service';
 
 const POLL_INTERVAL_MS = Number(process.env.ETH_POLL_INTERVAL_MS || 15_000);
@@ -553,7 +553,7 @@ export class BlockchainService {
     }
 
     const voucher = await Voucher.findOne({ voucherId });
-    const amountUsd = voucher?.amountUsd ?? TIER_VOLUMES[tierStr as Tier] ?? 0;
+    const amountUsd = voucher?.amountUsd ?? getTierVolumeUsd(tierStr);
     const previousTier = user.tier;
 
     // Authoritative state update — same lifecycle as a forced membership, plus a
@@ -1066,6 +1066,6 @@ export class BlockchainService {
   }
 
   private getTierCost(tier: string): number {
-    return TIER_VOLUMES[tier as Tier] || 0;
+    return getTierVolumeUsd(tier);
   }
 }

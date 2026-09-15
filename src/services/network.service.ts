@@ -2,8 +2,8 @@ import { ethers } from 'ethers';
 import User, { IUser } from '../models/User';
 import AdminUserOverride from '../models/AdminUserOverride';
 import Transaction from '../models/Transaction';
-import { RANK_REQUIREMENTS, TIER_VOLUMES, Rank, getRankLadderIndex } from '../constants';
-import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals } from './contract.service';
+import { RANK_REQUIREMENTS, Rank, getRankLadderIndex } from '../constants';
+import { hntrContract, CONTRACT_ADDRESS, contractABI, getErc20, getContractAmountDecimals, getTierVolumeUsd } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
 import { ENV } from '../config/env';
 import { logger } from '../utils/logger';
@@ -464,7 +464,7 @@ export class NetworkService {
   }
   
   private static getTierVolume(tier: string): number {
-      return TIER_VOLUMES[tier as keyof typeof TIER_VOLUMES] || 0;
+      return getTierVolumeUsd(tier);
   }
 
   private static getTierLevel(tier: string): number {

@@ -26,7 +26,7 @@ export interface IVoucher extends Document {
   tier: 'Bronze' | 'Silver' | 'Gold' | 'Platinum' | 'Diamond';
   /** 1..5, matches the on-chain Tier enum (NONE=0). */
   tierIndex: number;
-  /** TIER_VOLUMES[tier], denormalized at issue so a later price change cannot alter the refund. */
+  /** getTierVolumeUsd(tier) at issue time, denormalized so a later price change cannot alter the refund. */
   amountUsd: number;
   /** Which balance bucket was debited. */
   token: VoucherToken;
@@ -35,11 +35,12 @@ export interface IVoucher extends Document {
   note?: string;
 
   /**
-   * Lowercased username this code is reserved for — set at issue time. Only that
-   * account can redeem it; everyone else's attempt is rejected even with the code
-   * in hand. Vouchers are no longer bearer codes (see redeem() in voucher.service.ts).
+   * Lowercased username this code is reserved for. Legacy field: codes issued
+   * before bearer codes were reintroduced have this set and stay restricted to
+   * that one account; new codes leave it unset so any registered user can
+   * redeem, first-claim-wins (see redeem() in voucher.service.ts).
    */
-  restrictedUsername: string;
+  restrictedUsername?: string;
 
   /**
    * Bearer code: whoever redeems it first gets it, no matter how many people it
@@ -98,7 +99,7 @@ const VoucherSchema: Schema = new Schema(
       default: 'ACTIVE',
     },
     note: { type: String, maxlength: 64 },
-    restrictedUsername: { type: String, required: true, lowercase: true, index: true },
+    restrictedUsername: { type: String, lowercase: true, index: true },
 
     sharedWith: {
       type: [
