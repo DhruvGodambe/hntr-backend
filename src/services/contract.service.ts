@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import { ENV } from '../config/env';
 import { logger } from '../utils/logger';
+import { Tier, TIER_INDEX, TIER_VOLUMES } from '../constants';
 
 export const CONTRACT_ADDRESS = ENV.CONTRACT_ADDRESS;
 export const RPC_URL = ENV.RPC_URL;
@@ -243,4 +244,43 @@ export async function getContractAmountDecimals(): Promise<number> {
   }
 
   return cachedTokenDecimals;
+}
+
+const TIER_PRICE_REFRESH_MS = 60_000;
+const PRICED_TIERS = [Tier.BRONZE, Tier.SILVER, Tier.GOLD, Tier.PLATINUM, Tier.DIAMOND];
+
+/** In-memory mirror of on-chain tierPrices(), seeded with TIER_VOLUMES until the first refresh lands. */
+const tierVolumeCache: Record<Tier, number> = { ...TIER_VOLUMES };
+let tierPriceSyncTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Current USD tier volume, kept in sync with the on-chain tierPrices() mapping via
+ * refreshTierPrices(). Used everywhere "team volume" or a tier's USD value is needed,
+ * so an owner/burner setTierPrice() call is reflected without a redeploy.
+ */
+export function getTierVolumeUsd(tier: string): number {
+  return tierVolumeCache[tier as Tier] ?? 0;
+}
+
+/** Re-reads all tier prices from the contract. Keeps the last known values on RPC failure. */
+export async function refreshTierPrices(): Promise<void> {
+  try {
+    const decimals = await getContractAmountDecimals();
+    const prices = await Promise.all(
+      PRICED_TIERS.map((tier) => hntrContract.tierPrices(TIER_INDEX[tier])),
+    );
+    PRICED_TIERS.forEach((tier, i) => {
+      tierVolumeCache[tier] = Number(ethers.formatUnits(prices[i], decimals));
+    });
+  } catch (err: any) {
+    logger.warn(`refreshTierPrices failed, keeping last known tier volumes: ${err.message}`);
+  }
+}
+
+/** Starts a periodic background refresh of the tier price cache. Call once at startup. */
+export function startTierPriceSync(): void {
+  if (tierPriceSyncTimer) return;
+  tierPriceSyncTimer = setInterval(() => {
+    refreshTierPrices().catch((err: any) => logger.warn(`tier price sync: ${err.message}`));
+  }, TIER_PRICE_REFRESH_MS);
 }

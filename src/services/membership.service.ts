@@ -10,8 +10,9 @@ import {
   SIGNATURE_TTL_SECONDS,
   provider,
   getContractAmountDecimals,
+  getTierVolumeUsd,
 } from './contract.service';
-import { Tier, TIER_VOLUMES } from '../constants';
+import { Tier } from '../constants';
 import { logger } from '../utils/logger';
 import { findActivePendingRelay } from '../utils/staleTransactions';
 
@@ -328,7 +329,7 @@ export class MembershipService {
       type: 'PURCHASE',
       tier: tierName,
       token: String(quote.tokenAddress).toLowerCase(),
-      amount: TIER_VOLUMES[quote.tier as Tier] || 0,
+      amount: getTierVolumeUsd(quote.tier),
       status: 'PENDING',
     });
 
@@ -382,7 +383,7 @@ export class MembershipService {
       type: 'UPGRADE',
       tier: newTierName,
       token: String(quote.tokenAddress).toLowerCase(),
-      amount: TIER_VOLUMES[quote.tier as Tier] || 0,
+      amount: getTierVolumeUsd(quote.tier),
       status: 'PENDING',
     });
 

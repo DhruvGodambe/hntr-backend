@@ -18,6 +18,13 @@ export enum Rank {
   LEGEND = 'Legend Hunter',
 }
 
+/**
+ * Fallback/bootstrap USD tier volumes, used to seed contract.service.ts's tier
+ * price cache before the first on-chain refresh. Runtime code should read
+ * getTierVolumeUsd() from contract.service.ts instead of this map directly, so
+ * volume stays in sync with the contract's live tierPrices() after an owner or
+ * burner wallet calls setTierPrice().
+ */
 export const TIER_VOLUMES: Record<Tier, number> = {
   [Tier.NONE]: 0,
   [Tier.BRONZE]: 50,

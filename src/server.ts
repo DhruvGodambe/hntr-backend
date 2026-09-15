@@ -3,7 +3,7 @@ import { connectDB } from './config/db';
 import { logger } from './utils/logger';
 import { installFetchLogger } from './utils/fetchLogger';
 import { BlockchainService } from './services/blockchain.service';
-import { verifyBurnerWallet } from './services/contract.service';
+import { verifyBurnerWallet, refreshTierPrices, startTierPriceSync } from './services/contract.service';
 import { initCronJobs } from './jobs/leadership-cron';
 import { createApp } from './app';
 
@@ -26,6 +26,11 @@ const startServer = async () => {
 
     // Non-fatal: logs loudly if the burner key is missing/mismatched/over-privileged.
     verifyBurnerWallet().catch((err) => logger.warn(`verifyBurnerWallet: ${err.message}`));
+
+    // Seed the tier price cache before serving, then keep it in sync with on-chain
+    // setTierPrice() calls so team volume never drifts from the real tier price.
+    await refreshTierPrices().catch((err: any) => logger.warn(`refreshTierPrices: ${err.message}`));
+    startTierPriceSync();
 
     initCronJobs();
 

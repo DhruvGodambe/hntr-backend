@@ -12,12 +12,12 @@ import { RewardsService } from './rewards.service';
 import { NetworkService } from './network.service';
 import { SecurityWalletService } from './securityWallet.service';
 import { PointsService } from './points.service';
-import { Tier, TIER_VOLUMES } from '../constants';
 import {
   hntrContract,
   hntrContractWithBurnerSigner,
   getErc20,
   getContractAmountDecimals,
+  getTierVolumeUsd,
   provider,
 } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
@@ -681,7 +681,7 @@ export class AdminPanelService {
     const normalizedHash = txHash.toLowerCase();
     const amountUsd = Math.max(
       0,
-      (TIER_VOLUMES[onChainTier as Tier] || 0) - (TIER_VOLUMES[previousTier as Tier] || 0),
+      getTierVolumeUsd(onChainTier) - getTierVolumeUsd(previousTier),
     );
     try {
       const existing = await Transaction.findOne({
