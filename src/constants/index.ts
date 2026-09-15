@@ -24,7 +24,7 @@ export const TIER_VOLUMES: Record<Tier, number> = {
   [Tier.SILVER]: 250,
   [Tier.GOLD]: 750,
   [Tier.PLATINUM]: 1500,
-  [Tier.DIAMOND]: 2000,
+  [Tier.DIAMOND]: 2500,
 };
 
 /** On-chain Tier enum index (NONE = 0). Matches HNTRMembership.sol `enum Tier`. */
