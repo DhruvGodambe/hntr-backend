@@ -114,6 +114,11 @@ export class UserService {
     return { username, available: !taken };
   }
 
+  /**
+   * Any registered user — member or not — can sponsor a referral; membership
+   * only gates whether the sponsor *earns commission* on it (checked on-chain
+   * per COMMISSION_LEVELS at purchase time), not whether the referral can happen.
+   */
   static async assertSponsorEligible(sponsorUsername: string): Promise<IUser> {
     const normalized = sponsorUsername.trim();
     if (!normalized) {
@@ -128,20 +133,7 @@ export class UserService {
       throw new UserError('SPONSOR_NOT_FOUND', 'Sponsor not found', 404);
     }
 
-    const syncedSponsor = await this.syncUserTierWithBlockchain(sponsor);
-
-    if (
-      !this.isRootAdminUser(syncedSponsor) &&
-      (!syncedSponsor.tier || syncedSponsor.tier === Tier.NONE)
-    ) {
-      throw new UserError(
-        'SPONSOR_NO_MEMBERSHIP',
-        'This sponsor does not have an active membership plan. Ask your referrer to purchase a membership first.',
-        400,
-      );
-    }
-
-    return syncedSponsor;
+    return this.syncUserTierWithBlockchain(sponsor);
   }
 
   static async validateSponsor(sponsorUsername: string): Promise<{ username: string; tier: string }> {
