@@ -218,16 +218,17 @@ export class NetworkService {
 
         let totalVolume = 0;
         if (directUser) {
-            totalVolume += this.getTierVolume(directUser.tier);
-            logger.info(`  Leg ${direct}: direct user tier=${directUser.tier}, volume=${this.getTierVolume(directUser.tier)}`);
+            const directVolume = this.getQualifyingTierVolume(directUser);
+            totalVolume += directVolume;
+            logger.info(`  Leg ${direct}: direct user tier=${directUser.tier}, volume=${directVolume}${directUser.isForcedMembership ? ' (forced/gift membership, excluded)' : ''}`);
         } else {
             logger.warn(`  Leg ${direct}: direct user not found in database`);
         }
 
         for (const dl of downlinesOfDirect) {
-            const dlVolume = this.getTierVolume(dl.tier);
+            const dlVolume = this.getQualifyingTierVolume(dl);
             totalVolume += dlVolume;
-            logger.info(`  Leg ${direct}: descendant ${dl.username} tier=${dl.tier}, volume=${dlVolume}`);
+            logger.info(`  Leg ${direct}: descendant ${dl.username} tier=${dl.tier}, volume=${dlVolume}${dl.isForcedMembership ? ' (forced/gift membership, excluded)' : ''}`);
         }
 
         legVolumes.set(direct, totalVolume);
@@ -465,6 +466,16 @@ export class NetworkService {
   
   private static getTierVolume(tier: string): number {
       return getTierVolumeUsd(tier);
+  }
+
+  /**
+   * Tier volume for team/leg volume purposes — zero for admin-granted or
+   * gift-code (voucher) memberships, since no purchase backs them and they
+   * should not inflate an upline's rank qualification or override commissions.
+   */
+  private static getQualifyingTierVolume(user: { tier: string; isForcedMembership?: boolean }): number {
+      if (user.isForcedMembership) return 0;
+      return this.getTierVolume(user.tier);
   }
 
   private static getTierLevel(tier: string): number {
