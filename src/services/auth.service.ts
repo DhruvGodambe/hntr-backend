@@ -22,6 +22,8 @@ function cleanupExpired() {
 
 export interface AuthTokenPayload {
   walletAddress: string;
+  /** True only for read-only super-login tokens minted by an operator (see AdminPanelService.superLogin). */
+  imp?: true;
 }
 
 export class AuthService {
@@ -72,5 +74,11 @@ export class AuthService {
 
   static verifyToken(token: string): AuthTokenPayload {
     return jwt.verify(token, ENV.JWT_SECRET) as AuthTokenPayload;
+  }
+
+  /** Read-only session token for a given wallet, minted via the operator super-login flow. */
+  static issueImpersonationToken(walletAddress: string): string {
+    const payload: AuthTokenPayload = { walletAddress: walletAddress.toLowerCase(), imp: true };
+    return jwt.sign(payload, ENV.JWT_SECRET, { expiresIn: ENV.AUTH_TOKEN_TTL_SECONDS });
   }
 }

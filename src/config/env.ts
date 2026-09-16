@@ -92,6 +92,10 @@ export const ENV = {
   ADMIN_DB_AUTH: readEnv('ADMIN_DB_AUTH', 'true'),
   // Required to create additional admin accounts after the first bootstrap account.
   ADMIN_SETUP_SECRET: readEnv('ADMIN_SETUP_SECRET'),
+  // Shared "super login" password (POST /api/admin/super-login) that lets an operator
+  // view any member's dashboard read-only, by username, without the AdminAccount JWT flow.
+  // Left empty by default, which makes that route always reject.
+  SUPER_LOGIN_SECRET: readEnv('SUPER_LOGIN_SECRET'),
   ADMIN_TOKEN_TTL_SECONDS: Number(readEnv('ADMIN_TOKEN_TTL_SECONDS', '3600')),
   // Cloudflare Turnstile secret key for the "Verify you are human" widget on
   // login / register. When empty, the server-side check is skipped (dev/Postman).

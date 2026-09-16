@@ -12,6 +12,9 @@ router.post('/auth/register', adminRegisterRateLimit, verifyTurnstile, AdminPane
 router.post('/auth/login', adminLoginRateLimit, verifyTurnstile, AdminPanelController.login);
 router.get('/auth/me', adminApiRateLimit, AdminPanelController.me);
 
+// Shared "super login" password — read-only view of a member's dashboard by username.
+router.post('/super-login', adminLoginRateLimit, AdminPanelController.superLogin);
+
 // --- All routes below require admin JWT ---
 router.use(adminApiRateLimit);
 router.use(requireAdminPanelAuth);
