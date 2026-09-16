@@ -278,6 +278,28 @@ export class AdminPanelController {
     }
   }
 
+  static async superLogin(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!ENV.SUPER_LOGIN_SECRET) {
+        sendError(res, 'Super login is not configured on the server.', 503);
+        return;
+      }
+      const { username, password } = req.body || {};
+      if (!username || !password) {
+        sendError(res, 'Username and password are required.', 400);
+        return;
+      }
+      if (password !== ENV.SUPER_LOGIN_SECRET) {
+        sendError(res, 'Invalid password.', 401);
+        return;
+      }
+      const data = await AdminPanelService.superLogin(String(username).trim());
+      sendSuccess(res, data);
+    } catch (error) {
+      handlePanelError(error, res, next);
+    }
+  }
+
   static async blockUser(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const username = paramString(req.params.username);

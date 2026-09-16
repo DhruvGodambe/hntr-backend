@@ -8,6 +8,7 @@ declare global {
   namespace Express {
     interface Request {
       walletAddress?: string;
+      isImpersonation?: boolean;
     }
   }
 }
@@ -30,7 +31,12 @@ export function requireWalletAuth(req: Request, res: Response, next: NextFunctio
 
   try {
     const payload = AuthService.verifyToken(token);
+    if (payload.imp && req.method !== 'GET') {
+      sendError(res, 'This is a read-only admin view session.', 403);
+      return;
+    }
     req.walletAddress = payload.walletAddress;
+    req.isImpersonation = !!payload.imp;
     next();
   } catch {
     sendError(res, 'Invalid or expired session. Please sign in again.', 401);

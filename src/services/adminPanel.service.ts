@@ -21,6 +21,7 @@ import {
   provider,
 } from './contract.service';
 import { getLogsViaEtherscan } from './etherscan.service';
+import { AuthService } from './auth.service';
 import { ENV } from '../config/env';
 import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares, getRankLadderIndex } from '../constants';
 import { paginatedResponse, sanitizeSearch } from '../utils/pagination';
@@ -437,6 +438,15 @@ export class AdminPanelService {
     }
 
     return paginatedResponse(items, statusFilter ? items.length : total, page, limit);
+  }
+
+  /** Mints a read-only session token for the given username's wallet (operator super-login). */
+  static async superLogin(username: string) {
+    const user = await User.findOne({ username });
+    if (!user || !user.walletAddress) throw new AdminPanelError('USER_NOT_FOUND', 'User not found.', 404);
+
+    const token = AuthService.issueImpersonationToken(user.walletAddress);
+    return { token, walletAddress: user.walletAddress, username: user.username };
   }
 
   static async setUserBlocked(username: string, blocked: boolean, reason?: string) {
