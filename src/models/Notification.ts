@@ -3,6 +3,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 export type NotificationType =
   | 'COMMISSION_EARNED'
   | 'COMMISSION_CLAIMED'
+  | 'COMMISSION_SWEPT'
   | 'MEMBERSHIP_PURCHASED'
   | 'MEMBERSHIP_UPGRADED'
   | 'LEADERSHIP_PAYOUT'
@@ -43,6 +44,7 @@ const NotificationSchema: Schema = new Schema({
     enum: [
       'COMMISSION_EARNED',
       'COMMISSION_CLAIMED',
+      'COMMISSION_SWEPT',
       'MEMBERSHIP_PURCHASED',
       'MEMBERSHIP_UPGRADED',
       'LEADERSHIP_PAYOUT',
