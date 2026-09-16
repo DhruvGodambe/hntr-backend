@@ -888,10 +888,10 @@ export class BlockchainService {
     const isAdmin = params.source === 'security_wallet';
     await NotificationService.createQuiet({
       walletAddress: params.walletAddress,
-      type: 'COMMISSION_CLAIMED',
-      title: isAdmin ? 'Commissions withdrawn (admin)' : 'Referral commission claimed',
+      type: isAdmin ? 'COMMISSION_SWEPT' : 'COMMISSION_CLAIMED',
+      title: isAdmin ? 'Unclaimed commission swept' : 'Referral commission claimed',
       sub: isAdmin
-        ? `$${params.amount.toFixed(2)} ${symbol} swept to your wallet by the security wallet.`
+        ? `$${params.amount.toFixed(2)} ${symbol} was unclaimed past the grace period and has been swept into security-wallet custody. Contact support to arrange payout.`
         : `$${params.amount.toFixed(2)} ${symbol} sent to your wallet.`,
       link: 'VIEW TRANSACTION',
       meta: {
