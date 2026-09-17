@@ -673,6 +673,9 @@ export class AdminPanelService {
 
     user.tier = onChainTier as typeof user.tier;
     user.isForcedMembership = true;
+    // Clear any prior voucher-gift flag — the current plan now comes from this
+    // admin override, so the Users tag should read "Forced", not a stale "Gift".
+    user.isVoucherMembership = false;
     await user.save();
 
     const override = await AdminUserOverride.findOneAndUpdate(
