@@ -35,7 +35,6 @@ async function runE2E() {
     username: 'genesis',
     walletAddress: genesisWallet.address.toLowerCase(),
     email: 'genesis@hntr.com',
-    phone: '1234567890',
     sponsorUsername: null,
     ancestors: [],
     directDownline: [],

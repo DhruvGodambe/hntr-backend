@@ -31,7 +31,6 @@ async function seedAdminRoot() {
       walletAddress: '',
       type: 'admin',
       email: undefined,
-      phone: undefined,
       sponsorUsername: null,
       ancestors: [],
       directDownline: [],

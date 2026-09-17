@@ -145,7 +145,7 @@ export class UserService {
     username: string;
     walletAddress: string;
     email: string;
-    phone: string;
+    phone?: string;
     sponsorUsername?: string;
     country?: string;
   }): Promise<IUser> {
