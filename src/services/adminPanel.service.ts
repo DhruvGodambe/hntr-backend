@@ -693,6 +693,7 @@ export class AdminPanelService {
       0,
       getTierVolumeUsd(onChainTier) - getTierVolumeUsd(previousTier),
     );
+    let recordedHere = false;
     try {
       const existing = await Transaction.findOne({
         txHash: normalizedHash,
@@ -709,11 +710,30 @@ export class AdminPanelService {
           status: 'CONFIRMED',
           timestamp: new Date(),
         });
+        recordedHere = true;
       }
     } catch (err: unknown) {
       logger.error(
         `Failed to record MEMBERSHIP_OVERRIDE transaction for ${username}: ${err instanceof Error ? err.message : err}`,
       );
+    }
+
+    if (recordedHere) {
+      try {
+        const { NotificationService } = await import('./notification.service');
+        await NotificationService.createQuiet({
+          walletAddress: wallet,
+          type: 'MEMBERSHIP_UPGRADED',
+          title: `Membership upgraded to ${onChainTier}`,
+          sub: `${onChainTier} membership granted via admin override${previousTier && previousTier !== 'None' ? ` (from ${previousTier})` : ''}.`,
+          link: 'VIEW MEMBERSHIP',
+          meta: { tier: onChainTier, oldTier: previousTier, txHash: normalizedHash, viaOverride: true },
+        });
+      } catch (err: unknown) {
+        logger.error(
+          `Failed to send membership override notification for ${username}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
     }
 
     try {

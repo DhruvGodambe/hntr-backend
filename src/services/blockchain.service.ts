@@ -721,6 +721,15 @@ export class BlockchainService {
       logger.error(`Failed to award points for membership override ${normalizedHash}: ${pointsErr.message}`);
     }
 
+    await NotificationService.createQuiet({
+      walletAddress: normalizedWallet,
+      type: 'MEMBERSHIP_UPGRADED',
+      title: `Membership upgraded to ${tierStr}`,
+      sub: `${tierStr} membership granted via admin override${previousTier && previousTier !== 'None' ? ` (from ${previousTier})` : ''}.`,
+      link: 'VIEW MEMBERSHIP',
+      meta: { tier: tierStr, oldTier: previousTier, txHash: normalizedHash, viaOverride: true },
+    });
+
     try {
       await NetworkService.recalculateUplineVolumes(user.username);
     } catch (err: any) {
