@@ -1,10 +1,7 @@
 import User, { IUser } from '../models/User';
 import Payout, { IPayoutBreakdownEntry } from '../models/Payout';
 import AchievementBonus from '../models/AchievementBonus';
-import DisbursementBatch, {
-  IDispersalEntry,
-  IFundTransfer,
-} from '../models/DisbursementBatch';
+import DisbursementBatch, { IDispersalEntry } from '../models/DisbursementBatch';
 import { ethers } from 'ethers';
 import {
   hntrContract,
@@ -231,50 +228,6 @@ export class RewardsService {
       }
     }
     return totals;
-  }
-
-  /**
-   * Hop 1: move shortfall from protocol wallet → burner (protocol wallet pays gas).
-   * Prefer existing burner balances; only top up what is missing.
-   */
-  private static async fundBurnerFromProtocol(
-    protocolSigner: ethers.Wallet,
-    burnerAddress: string,
-    needed: Record<'USDT' | 'USDC', bigint>,
-    burnerPools: StablecoinPool[],
-  ): Promise<IFundTransfer[]> {
-    const fundTransfers: IFundTransfer[] = [];
-    const zero = BigInt(0);
-
-    for (const symbol of ['USDT', 'USDC'] as const) {
-      const need = needed[symbol];
-      if (need <= zero) continue;
-      const burnerHave = burnerPools.find((p) => p.symbol === symbol)?.rawBalance ?? zero;
-      const shortfall = need > burnerHave ? need - burnerHave : zero;
-      if (shortfall <= zero) {
-        console.log(`Hop1 ${symbol}: burner already has enough (need ${need}, have ${burnerHave})`);
-        continue;
-      }
-
-      const pool = burnerPools.find((p) => p.symbol === symbol);
-      if (!pool) throw new Error(`Missing ${symbol} pool metadata`);
-
-      console.log(
-        `Hop1 ${symbol}: transferring ${ethers.formatUnits(shortfall, pool.decimals)} from ${protocolSigner.address} → burner ${burnerAddress}`,
-      );
-      const erc20 = getErc20(pool.address).connect(protocolSigner) as ethers.Contract;
-      const tx = await erc20.transfer(burnerAddress, shortfall);
-      await tx.wait(1);
-      fundTransfers.push({
-        token: symbol,
-        tokenAddress: pool.address,
-        amountRaw: shortfall.toString(),
-        amount: Number(ethers.formatUnits(shortfall, pool.decimals)),
-        txHash: tx.hash,
-      });
-    }
-
-    return fundTransfers;
   }
 
   /**
@@ -932,7 +885,7 @@ export class RewardsService {
       })),
       protocolCombined,
       hopNote:
-        'Step 1: connect the funding wallet and send the burner the "Send to burner" amount — USDT first, then USDC for the rest. Step 2: Distribute pays each recipient entirely in one token (USDT while it lasts, then USDC) — never a mix per recipient.',
+        'Step 1: transfer the "Send to burner" amount to the burner address externally — USDT first, then USDC for the rest. Step 2: once funded, Distribute pays each recipient entirely in one token (USDT while it lasts, then USDC) — never a mix per recipient.',
     };
   }
 }
