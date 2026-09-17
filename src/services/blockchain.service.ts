@@ -682,6 +682,10 @@ export class BlockchainService {
     const previousTier = user.tier;
     user.tier = tierStr as any;
     user.isForcedMembership = true;
+    // The current plan is now sourced from this admin override, not any prior
+    // voucher redemption — clear the gift flag so the Users tag shows "Forced"
+    // instead of the stale "Gift" tag from before this override.
+    user.isVoucherMembership = false;
     await user.save();
 
     await AdminUserOverride.findOneAndUpdate(
