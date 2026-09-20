@@ -65,7 +65,18 @@ const TX_TYPE_MAP: Record<string, string[]> = {
   gift_redemptions: ['VOUCHER_MEMBERSHIP_REDEEM'],
   membership_overrides: ['MEMBERSHIP_OVERRIDE'],
   withdrawals: ['COMMISSION_WITHDRAWN', 'UNCLAIMED_WITHDRAWN', 'COMMISSION_CLAIM'],
+  leadership_payouts: ['LEADERSHIP_PAYOUT'],
+  rank_bonuses: ['ACHIEVEMENT_BONUS'],
 };
+
+/** Mirrors NetworkController's reward-status mapping so admin + user views agree. */
+function mapRewardStatus(
+  status: 'PENDING' | 'PENDING_REVIEW' | 'PAID' | 'FAILED' | 'REJECTED',
+): 'PENDING' | 'CONFIRMED' | 'FAILED' {
+  if (status === 'PAID') return 'CONFIRMED';
+  if (status === 'FAILED' || status === 'REJECTED') return 'FAILED';
+  return 'PENDING';
+}
 
 const ERC20_TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
 
@@ -817,28 +828,62 @@ export class AdminPanelService {
     return this.recordMembershipOverride({ username, txHash: tx.hash as string, tier });
   }
 
+  /**
+   * Master transaction ledger for the admin panel. Beyond the on-chain-mirrored
+   * `Transaction` collection, leadership pool dispersals (Global Sales Bonus) and
+   * one-time rank achievement bonuses live in their own `Payout` / `AchievementBonus`
+   * collections (same as the user-facing history in NetworkController.getTransactions) —
+   * merge them in here so "All" is actually the full audit trail, not just on-chain events.
+   */
   static async getTransactions(type: string, page: number, limit: number, skip: number, search?: string) {
-    const query: Record<string, unknown> = { status: { $in: ['CONFIRMED', 'PENDING', 'FAILED'] } };
-
     const mappedTypes = TX_TYPE_MAP[type] ?? TX_TYPE_MAP.all;
-    if (mappedTypes.length > 0) query.type = { $in: mappedTypes };
+    const includeAllTypes = mappedTypes.length === 0;
+    const includePayouts = includeAllTypes || mappedTypes.includes('LEADERSHIP_PAYOUT');
+    const includeBonuses = includeAllTypes || mappedTypes.includes('ACHIEVEMENT_BONUS');
 
-    if (search) {
-      const safe = sanitizeSearch(search);
-      if (safe) {
-        query.$or = [
-          { walletAddress: { $regex: safe, $options: 'i' } },
-          { txHash: { $regex: safe, $options: 'i' } },
-        ];
-      }
+    const txQuery: Record<string, unknown> = { status: { $in: ['CONFIRMED', 'PENDING', 'FAILED'] } };
+    if (!includeAllTypes) txQuery.type = { $in: mappedTypes };
+
+    const payoutQuery: Record<string, unknown> = {};
+    const bonusQuery: Record<string, unknown> = {};
+
+    const safe = search ? sanitizeSearch(search) : '';
+    if (safe) {
+      txQuery.$or = [
+        { walletAddress: { $regex: safe, $options: 'i' } },
+        { txHash: { $regex: safe, $options: 'i' } },
+      ];
+      const ownerOr = [
+        { walletAddress: { $regex: safe, $options: 'i' } },
+        { username: { $regex: safe, $options: 'i' } },
+        { txHash: { $regex: safe, $options: 'i' } },
+      ];
+      payoutQuery.$or = ownerOr;
+      bonusQuery.$or = ownerOr;
     }
 
-    const [total, rows] = await Promise.all([
-      Transaction.countDocuments(query),
-      Transaction.find(query).sort({ timestamp: -1 }).skip(skip).limit(limit).lean(),
+    // To page correctly across three independently-sorted collections without
+    // scanning each in full: the global top-K (K = skip + limit) can only be made
+    // up of items that are each within their own collection's top-K, so fetching
+    // K from each source and re-merging is sufficient and stays O(K) per source.
+    const fetchDepth = skip + limit;
+
+    const [txTotal, payoutTotal, bonusTotal, txRows, payoutRows, bonusRows] = await Promise.all([
+      Transaction.countDocuments(txQuery),
+      includePayouts ? Payout.countDocuments(payoutQuery) : Promise.resolve(0),
+      includeBonuses ? AchievementBonus.countDocuments(bonusQuery) : Promise.resolve(0),
+      Transaction.find(txQuery).sort({ timestamp: -1 }).limit(fetchDepth).lean(),
+      includePayouts
+        ? Payout.find(payoutQuery).sort({ createdAt: -1 }).limit(fetchDepth).lean()
+        : Promise.resolve([]),
+      includeBonuses
+        ? AchievementBonus.find(bonusQuery).sort({ createdAt: -1 }).limit(fetchDepth).lean()
+        : Promise.resolve([]),
     ]);
 
-    const walletAddresses = [...new Set(rows.map((r) => r.walletAddress.toLowerCase()))];
+    const total = txTotal + payoutTotal + bonusTotal;
+
+    const walletAddresses = [...new Set(txRows.map((r) => r.walletAddress.toLowerCase()))];
     const [users, pointsLedgers] = await Promise.all([
       User.find({ walletAddress: { $in: walletAddresses } }).select('walletAddress username hntrPoints').lean(),
       PointsLedger.find({ walletAddress: { $in: walletAddresses } })
@@ -848,32 +893,70 @@ export class AdminPanelService {
 
     const userByWallet = new Map(users.map((u) => [u.walletAddress.toLowerCase(), u]));
 
-    const items = await Promise.all(
-      rows.map(async (tx) => {
-      const user = userByWallet.get(tx.walletAddress.toLowerCase());
-      const relatedPoints = pointsLedgers.find(
-        (p) =>
-          p.walletAddress.toLowerCase() === tx.walletAddress.toLowerCase() &&
-          tx.txHash &&
-          p.txHash === tx.txHash,
-      );
+    const txItems = await Promise.all(
+      txRows.map(async (tx) => {
+        const user = userByWallet.get(tx.walletAddress.toLowerCase());
+        const relatedPoints = pointsLedgers.find(
+          (p) =>
+            p.walletAddress.toLowerCase() === tx.walletAddress.toLowerCase() &&
+            tx.txHash &&
+            p.txHash === tx.txHash,
+        );
 
-      return {
-        id: String(tx._id),
-        date: tx.timestamp,
-        user: user?.username || tx.walletAddress.slice(0, 8) + '...',
-        walletAddress: tx.walletAddress,
-        type: tx.type,
-        amount: tx.amount,
-        token: await resolveAdminTokenLabel(tx.token),
-        hntrPoints: relatedPoints?.amount ?? null,
-        txHash: tx.txHash || null,
-        status: tx.status,
-        tier: tx.tier,
-        level: tx.level,
-      };
-    }),
+        return {
+          id: String(tx._id),
+          date: tx.timestamp,
+          user: user?.username || tx.walletAddress.slice(0, 8) + '...',
+          walletAddress: tx.walletAddress,
+          type: tx.type,
+          amount: tx.amount,
+          token: await resolveAdminTokenLabel(tx.token),
+          hntrPoints: relatedPoints?.amount ?? null,
+          txHash: tx.txHash || null,
+          status: tx.status,
+          tier: tx.tier,
+          level: tx.level,
+        };
+      }),
     );
+
+    const payoutItems = payoutRows.map((payout) => {
+      const paidEntry = (payout.breakdown || []).find((b) => b.status === 'PAID' && b.txHash);
+      return {
+        id: `payout-${String(payout._id)}`,
+        date: payout.createdAt,
+        user: payout.username,
+        walletAddress: payout.walletAddress,
+        type: 'LEADERSHIP_PAYOUT',
+        amount: payout.amountUSDC,
+        token: paidEntry?.symbol || payout.breakdown?.[0]?.symbol || '—',
+        hntrPoints: null,
+        txHash: paidEntry?.txHash || payout.txHash || null,
+        status: mapRewardStatus(payout.status),
+        tier: payout.month,
+        level: undefined,
+      };
+    });
+
+    const bonusItems = bonusRows.map((bonus) => ({
+      id: `bonus-${String(bonus._id)}`,
+      date: bonus.paidAt || bonus.createdAt,
+      user: bonus.username,
+      walletAddress: bonus.walletAddress,
+      type: 'ACHIEVEMENT_BONUS',
+      amount: bonus.amountUSD,
+      token: bonus.token || '—',
+      hntrPoints: null,
+      txHash: bonus.txHash || null,
+      status: mapRewardStatus(bonus.status),
+      tier: bonus.rank,
+      level: undefined,
+    }));
+
+    const merged = [...txItems, ...payoutItems, ...bonusItems].sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+    const items = merged.slice(skip, skip + limit);
 
     return paginatedResponse(items, total, page, limit);
   }
