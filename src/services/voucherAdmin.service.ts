@@ -6,7 +6,7 @@ import VoucherAdminAudit from '../models/VoucherAdminAudit';
 import AchievementBonus from '../models/AchievementBonus';
 import User from '../models/User';
 import { UserService } from './user.service';
-import { getBurnerHealth, hntrContract, provider } from './contract.service';
+import { getBurnerHealth, getTierVolumeUsd, hntrContract, provider } from './contract.service';
 import { applyBalanceDelta, recalculateBalance, getBalances } from './voucherBalance';
 import { VoucherService, VoucherError } from './voucher.service';
 import { VoucherToken } from '../constants';
@@ -164,6 +164,19 @@ export class VoucherAdminService {
       } catch (err: any) {
         logger.warn(`admin voucher code decrypt failed for ${v.voucherId}: ${err.message}`);
       }
+
+      // A voucher is priced at the FULL target tier's value, but the redeemer may
+      // already have held a lower tier — the value of that prior tier is redundant
+      // ("wasted") rather than actually needed for the upgrade. Surface the real
+      // amount the redemption consumed (amountUsd minus what they already had) so
+      // admins can see e.g. a $2,500 Diamond voucher only "used" $1,750 of value on
+      // a redeemer who was already Gold ($750), vs. the full $2,500 for a None → tier
+      // redemption.
+      const amountUsedUsd =
+        v.status === 'REDEEMED'
+          ? Math.max(0, Number((v.amountUsd - getTierVolumeUsd(v.tierBefore || 'None')).toFixed(2)))
+          : null;
+
       return {
         voucherId: v.voucherId,
         code: plainCode,
@@ -180,6 +193,8 @@ export class VoucherAdminService {
         expiresAt: v.expiresAt,
         redeemedAt: v.redeemedAt ?? null,
         redeemerUsername: v.redeemerUsername ?? null,
+        tierBefore: v.tierBefore ?? null,
+        amountUsedUsd,
         txHash: v.txHash ?? null,
       };
     });
