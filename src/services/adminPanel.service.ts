@@ -392,6 +392,8 @@ export class AdminPanelService {
           { username: { $regex: safe, $options: 'i' } },
           { walletAddress: { $regex: safe, $options: 'i' } },
           { email: { $regex: safe, $options: 'i' } },
+          { sponsorUsername: { $regex: safe, $options: 'i' } },
+          { rank: { $regex: safe, $options: 'i' } },
         ];
       }
     }
@@ -421,6 +423,7 @@ export class AdminPanelService {
         id: String(u._id),
         username: u.username,
         walletAddress: u.walletAddress,
+        parentUser: u.sponsorUsername || 'None',
         tier,
         rank,
         teamVolume: u.teamVolume,
