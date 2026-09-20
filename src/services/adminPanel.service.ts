@@ -1212,12 +1212,18 @@ export class AdminPanelService {
       USDT: health.burnerTokens.find((t) => t.symbol === 'USDT')?.balance ?? 0,
       USDC: health.burnerTokens.find((t) => t.symbol === 'USDC')?.balance ?? 0,
     };
-    // The whole leadership pool is distributed. Move USDT first, then USDC for the
-    // rest — only top up what the burner is missing.
-    const fundToBurner = {
-      USDT: Math.max(0, Number((fundTotals.USDT - burnerHas.USDT).toFixed(6))),
-      USDC: Math.max(0, Number((fundTotals.USDC - burnerHas.USDC).toFixed(6))),
-    };
+    // The whole leadership pool is distributed — but only when there's actually
+    // someone left unpaid this month. If every eligible hunter already got their
+    // Payout for `month`, this run pays nobody, so don't ask the admin to fund the
+    // burner with whatever balance happens to be sitting in the leadership wallet
+    // (e.g. carried over for next month).
+    const fundToBurner =
+      unpaidShares > 0
+        ? {
+            USDT: Math.max(0, Number((fundTotals.USDT - burnerHas.USDT).toFixed(6))),
+            USDC: Math.max(0, Number((fundTotals.USDC - burnerHas.USDC).toFixed(6))),
+          }
+        : { USDT: 0, USDC: 0 };
 
     return {
       poolBalanceUSD: balances.totalUsd,
