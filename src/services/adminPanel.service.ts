@@ -1222,13 +1222,31 @@ export class AdminPanelService {
           }
         : { USDT: 0, USDC: 0 };
 
+    // Estimate which token each recipient will be paid from, mirroring the
+    // real distribution's greedy "USDT first, then USDC" single-token pick per
+    // recipient — using the burner's post-funding balances as the starting pools.
+    let remainingUsdt = burnerHas.USDT + fundToBurner.USDT;
+    let remainingUsdc = burnerHas.USDC + fundToBurner.USDC;
+    const withTokens = withEstimates.map((h) => {
+      if (h.alreadyPaid || !h.estimatedPayoutUSD) return { ...h, payoutToken: undefined };
+      if (remainingUsdt >= h.estimatedPayoutUSD) {
+        remainingUsdt -= h.estimatedPayoutUSD;
+        return { ...h, payoutToken: 'USDT' as const };
+      }
+      if (remainingUsdc >= h.estimatedPayoutUSD) {
+        remainingUsdc -= h.estimatedPayoutUSD;
+        return { ...h, payoutToken: 'USDC' as const };
+      }
+      return { ...h, payoutToken: undefined };
+    });
+
     return {
       poolBalanceUSD: balances.totalUsd,
       poolTokens: balances.tokens,
       leadershipWallet: String(leadershipWallet).toLowerCase(),
       eligibleCount: eligibleUsers.length,
       unpaidCount: hunters.filter((h) => !h.alreadyPaid).length,
-      eligibleUsers: withEstimates,
+      eligibleUsers: withTokens,
       totalShares,
       month,
       fundTotals,
@@ -1284,6 +1302,32 @@ export class AdminPanelService {
     const fundUsdc = Math.max(0, Number((need - fundUsdt).toFixed(6)));
     const fundToBurner = { USDT: Number(fundUsdt.toFixed(6)), USDC: fundUsdc };
 
+    // Estimate which token each bonus will be paid from, mirroring the real
+    // distribution's greedy "USDT first, then USDC" single-token pick per
+    // recipient — using the burner's post-funding balances as the starting pools.
+    let remainingUsdt = burnerHas.USDT + fundToBurner.USDT;
+    let remainingUsdc = burnerHas.USDC + fundToBurner.USDC;
+    const pendingWithTokens = pending.map((b) => {
+      const amountUSD = b.amountUSD || 0;
+      let payoutToken: 'USDT' | 'USDC' | undefined;
+      if (amountUSD > 0 && remainingUsdt >= amountUSD) {
+        remainingUsdt -= amountUSD;
+        payoutToken = 'USDT';
+      } else if (amountUSD > 0 && remainingUsdc >= amountUSD) {
+        remainingUsdc -= amountUSD;
+        payoutToken = 'USDC';
+      }
+      return {
+        id: String(b._id),
+        username: b.username,
+        walletAddress: b.walletAddress,
+        rank: b.rank,
+        amountUSD: b.amountUSD,
+        createdAt: b.createdAt,
+        payoutToken,
+      };
+    });
+
     return {
       poolBalanceUSD: balances.totalUsd,
       poolTokens: balances.tokens,
@@ -1294,14 +1338,7 @@ export class AdminPanelService {
       burnerHas,
       fundToBurner,
       fundFromWallet: String(rankWallet).toLowerCase(),
-      pendingBonuses: pending.map((b) => ({
-        id: String(b._id),
-        username: b.username,
-        walletAddress: b.walletAddress,
-        rank: b.rank,
-        amountUSD: b.amountUSD,
-        createdAt: b.createdAt,
-      })),
+      pendingBonuses: pendingWithTokens,
       hopNote: health.hopNote,
       protocolEth: health.protocolEth,
       burnerEth: health.burnerEth,
