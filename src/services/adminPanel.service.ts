@@ -386,15 +386,24 @@ export class AdminPanelService {
     const query: Record<string, unknown> = {};
 
     if (search) {
+      const raw = search.trim();
       const safe = sanitizeSearch(search);
       if (safe) {
-        query.$or = [
+        const or: Record<string, unknown>[] = [
           { username: { $regex: safe, $options: 'i' } },
-          { walletAddress: { $regex: safe, $options: 'i' } },
-          { email: { $regex: safe, $options: 'i' } },
           { sponsorUsername: { $regex: safe, $options: 'i' } },
           { rank: { $regex: safe, $options: 'i' } },
         ];
+        // Only treat the term as a wallet-address fragment when it actually looks
+        // like one (0x-prefixed, or a run of 4+ hex chars) — an unqualified regex
+        // match against walletAddress lets short alphabetic queries (e.g. "de")
+        // substring-match somewhere inside a random 40-char hex address, returning
+        // rows with nothing the admin can see in common with what they typed.
+        const looksLikeWallet = /^0x[0-9a-f]*$/i.test(raw) || /^[0-9a-f]{4,}$/i.test(raw);
+        if (looksLikeWallet) or.push({ walletAddress: { $regex: safe, $options: 'i' } });
+        // Same reasoning for email — only match it when the term looks like one.
+        if (raw.includes('@')) or.push({ email: { $regex: safe, $options: 'i' } });
+        query.$or = or;
       }
     }
 
