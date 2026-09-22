@@ -1217,17 +1217,18 @@ export class AdminPanelService {
       USDT: health.burnerTokens.find((t) => t.symbol === 'USDT')?.balance ?? 0,
       USDC: health.burnerTokens.find((t) => t.symbol === 'USDC')?.balance ?? 0,
     };
-    // The whole leadership pool is distributed — but only when there's actually
-    // someone left unpaid this month. If every eligible hunter already got their
-    // Payout for `month`, this run pays nobody, so don't ask the admin to fund the
-    // burner with whatever balance happens to be sitting in the leadership wallet
-    // (e.g. carried over for next month).
+    // Only fund the burner with what's actually owed to unpaid recipients this run
+    // (their fixed pro-rata share of the pool) — not the whole leadership wallet
+    // balance, most of which belongs to shares already paid out earlier this month.
+    const totalOwedUSD = Number(
+      withEstimates.filter((h) => !h.alreadyPaid).reduce((sum, h) => sum + h.estimatedPayoutUSD, 0).toFixed(6),
+    );
+    const need = Math.max(0, Number((totalOwedUSD - burnerHas.USDT - burnerHas.USDC).toFixed(6)));
+    const fundUsdtNeeded = Math.min(need, fundTotals.USDT);
+    const fundUsdcNeeded = Math.max(0, Number((need - fundUsdtNeeded).toFixed(6)));
     const fundToBurner =
       unpaidShares > 0
-        ? {
-            USDT: Math.max(0, Number((fundTotals.USDT - burnerHas.USDT).toFixed(6))),
-            USDC: Math.max(0, Number((fundTotals.USDC - burnerHas.USDC).toFixed(6))),
-          }
+        ? { USDT: Number(fundUsdtNeeded.toFixed(6)), USDC: fundUsdcNeeded }
         : { USDT: 0, USDC: 0 };
 
     // Estimate which token each recipient will be paid from, mirroring the

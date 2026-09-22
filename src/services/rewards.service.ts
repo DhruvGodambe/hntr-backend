@@ -614,17 +614,21 @@ export class RewardsService {
       return [];
     }
 
-    const burnerPoolsInitial = await this.loadStablecoinPools(burner.address);
-    const planningPools = this.clonePools(burnerPoolsInitial);
+    // Reference pool for the fixed pro-rata split is the LEADERSHIP wallet's balance
+    // (same figure the admin preview shows as "Pool Balance") — not the burner's,
+    // which the admin may only fund with the smaller amount actually owed to unpaid
+    // recipients this run. Keeping the denominator tied to the burner's balance would
+    // make each recipient's owed amount depend on how much happened to be funded.
+    const referencePools = await this.loadStablecoinPools(String(leadershipWallet));
 
-    planningPools.forEach((p) =>
+    referencePools.forEach((p) =>
       console.log(
-        `Leadership plan pool ${p.symbol}: $${ethers.formatUnits(p.rawBalance, p.decimals)} (burner)`,
+        `Leadership plan pool ${p.symbol}: $${ethers.formatUnits(p.rawBalance, p.decimals)} (leadership wallet)`,
       ),
     );
 
     const zero = BigInt(0);
-    const totalRaw = planningPools.reduce((sum, p) => sum + p.rawBalance, zero);
+    const totalRaw = referencePools.reduce((sum, p) => sum + p.rawBalance, zero);
     if (totalRaw === zero) {
       console.log('Leadership pool is empty — nothing to distribute this month.');
       return [];
@@ -649,7 +653,8 @@ export class RewardsService {
 
     const currentMonth = new Date().toISOString().slice(0, 7);
     const recipients: PlannedRecipient[] = [];
-    const workPools = this.clonePools(planningPools);
+    // Actual spendable liquidity — whatever the admin funded the burner with.
+    const workPools = await this.loadStablecoinPools(burner.address);
 
     for (const userShare of userShares) {
       if (userShare.shares <= 0) continue;
