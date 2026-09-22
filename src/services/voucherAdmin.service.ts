@@ -3,7 +3,6 @@ import VoucherAccount from '../models/VoucherAccount';
 import VoucherBalance from '../models/VoucherBalance';
 import VoucherLedger from '../models/VoucherLedger';
 import VoucherAdminAudit from '../models/VoucherAdminAudit';
-import AchievementBonus from '../models/AchievementBonus';
 import User from '../models/User';
 import { UserService } from './user.service';
 import { getBurnerHealth, getTierVolumeUsd, hntrContract, provider } from './contract.service';
@@ -303,44 +302,6 @@ export class VoucherAdminService {
       reason: `checked ${checked}, repaired ${repaired}`,
     });
     return { checked, repaired };
-  }
-
-  // ── achievement-bonus review queue (Phase 5) ─────────────────────────────
-  static async listBonusReview(query: Record<string, unknown>) {
-    const { page, limit, skip } = parsePagination(query);
-    const status = (
-      query.status ? String(query.status).toUpperCase() : 'PENDING_REVIEW'
-    ) as 'PENDING' | 'PENDING_REVIEW' | 'PAID' | 'FAILED' | 'REJECTED';
-    const [items, total] = await Promise.all([
-      AchievementBonus.find({ status }).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      AchievementBonus.countDocuments({ status }),
-    ]);
-    return paginatedResponse(items, total, page, limit);
-  }
-
-  static async reviewBonus(adminUsername: string, id: string, decision: 'approve' | 'reject', reason?: string) {
-    const nextStatus = decision === 'approve' ? 'PENDING' : 'REJECTED';
-    const bonus = await AchievementBonus.findOneAndUpdate(
-      { _id: id, status: 'PENDING_REVIEW' },
-      { $set: { status: nextStatus, reviewedBy: adminUsername, reviewedAt: new Date(), reviewReason: reason } },
-      { new: true },
-    );
-    if (!bonus) throw new VoucherError('BONUS_NOT_IN_REVIEW', 'That bonus is not awaiting review.', 404);
-
-    await VoucherAdminAudit.create({
-      adminUsername,
-      action: 'REVIEW_ACHIEVEMENT_BONUS',
-      targetUsername: bonus.username,
-      targetWallet: bonus.walletAddress,
-      reason: `${decision}: ${bonus.rank} $${bonus.amountUSD}${reason ? ` — ${reason}` : ''}`,
-    });
-    return {
-      id: String(bonus._id),
-      status: bonus.status,
-      username: bonus.username,
-      rank: bonus.rank,
-      amountUSD: bonus.amountUSD,
-    };
   }
 
   static async ownerWallet() {

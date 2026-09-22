@@ -158,11 +158,9 @@ export class RewardsService {
     user: Pick<IUser, 'username' | 'walletAddress'>,
     previousRank: string,
     newRank: string,
-    opts?: { heldForReview?: boolean; reviewReason?: string },
   ) {
     const newlyAchieved = ranksNewlyAchieved(previousRank, newRank);
     const created = [];
-    const status = opts?.heldForReview ? 'PENDING_REVIEW' : 'PENDING';
 
     for (const rank of newlyAchieved) {
       const amountUSD = getAchievementBonusAmount(rank);
@@ -174,8 +172,7 @@ export class RewardsService {
           username: user.username,
           rank,
           amountUSD,
-          status,
-          reviewReason: opts?.heldForReview ? opts?.reviewReason : undefined,
+          status: 'PENDING',
           createdAt: new Date(),
         });
         created.push(bonus);
