@@ -92,9 +92,4 @@ router.get('/vouchers/burner', VoucherAdminController.getBurner);
 router.post('/vouchers/burner/record', requireAdminPrivileged, VoucherAdminController.recordBurner);
 router.post('/vouchers/reconcile', requireAdminPrivileged, VoucherAdminController.reconcile);
 
-// Achievement-bonus review queue (voucher volume held for manual approval)
-router.get('/achievement-bonuses', VoucherAdminController.listBonusReview);
-router.post('/achievement-bonuses/:id/approve', requireAdminPrivileged, VoucherAdminController.reviewBonus);
-router.post('/achievement-bonuses/:id/reject', requireAdminPrivileged, VoucherAdminController.reviewBonus);
-
 export default router;

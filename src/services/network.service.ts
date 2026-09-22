@@ -342,19 +342,10 @@ export class NetworkService {
     if (volumeQualifiedRank !== Rank.NONE) {
       try {
         const { RewardsService } = await import('./rewards.service');
-        // If any member of this user's downline holds a voucher-granted membership,
-        // some of the qualifying volume was not paid for. Hold the bonus for a
-        // manual admin decision instead of letting the daily cron auto-pay it.
-        const voucherInDownline = await User.exists({
-          ancestors: user.username,
-          isVoucherMembership: true,
-        });
-        await RewardsService.enqueueAchievementBonuses(user, Rank.NONE, volumeQualifiedRank, {
-          heldForReview: !!voucherInDownline,
-          reviewReason: voucherInDownline
-            ? 'Qualifying team volume includes one or more voucher-granted (unpaid) memberships.'
-            : undefined,
-        });
+        // Voucher/forced memberships in the downline already contribute 0 to
+        // qualifying team volume (see getQualifyingTierVolume), so their presence
+        // can never have inflated this rank qualification — no review hold needed.
+        await RewardsService.enqueueAchievementBonuses(user, Rank.NONE, volumeQualifiedRank);
       } catch (enqueueErr: any) {
         logger.error(
           `Failed to enqueue volume-qualified achievement bonuses for ${user.username}: ${enqueueErr.message}`,

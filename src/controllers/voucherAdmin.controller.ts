@@ -138,25 +138,4 @@ export class VoucherAdminController {
     }
   }
 
-  static async listBonusReview(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      sendSuccess(res, await VoucherAdminService.listBonusReview(req.query as Record<string, unknown>), 'OK');
-    } catch (e) {
-      handle(res, e, next);
-    }
-  }
-
-  static async reviewBonus(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const decision = req.path.endsWith('/approve') ? 'approve' : 'reject';
-      const { reason } = req.body || {};
-      sendSuccess(
-        res,
-        await VoucherAdminService.reviewBonus(admin(req), param(req.params.id), decision, reason),
-        decision === 'approve' ? 'Bonus approved' : 'Bonus rejected',
-      );
-    } catch (e) {
-      handle(res, e, next);
-    }
-  }
 }
