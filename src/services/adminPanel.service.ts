@@ -1200,13 +1200,9 @@ export class AdminPanelService {
     const withEstimates = hunters.map((h) => ({
       ...h,
       estimatedPayoutUSD:
-        !h.alreadyPaid && unpaidShares > 0
-          ? Number(((balances.totalUsd * h.shares) / unpaidShares).toFixed(2))
-          : h.alreadyPaid
-            ? 0
-            : totalShares > 0
-              ? Number(((balances.totalUsd * h.shares) / totalShares).toFixed(2))
-              : 0,
+        !h.alreadyPaid && totalShares > 0
+          ? Number(((balances.totalUsd * h.shares) / totalShares).toFixed(2))
+          : 0,
     }));
 
     const lastBatch = await DisbursementBatch.findOne({ type: 'LEADERSHIP', month })

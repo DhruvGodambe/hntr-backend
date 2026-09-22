@@ -652,7 +652,6 @@ export class RewardsService {
 
     const currentMonth = new Date().toISOString().slice(0, 7);
     const recipients: PlannedRecipient[] = [];
-    let remainingShares = totalShares;
     const workPools = this.clonePools(planningPools);
 
     for (const userShare of userShares) {
@@ -661,18 +660,21 @@ export class RewardsService {
       const existing = await Payout.findOne({ username: userShare.username, month: currentMonth });
       if (existing) {
         console.log(`Skipping ${userShare.username} — already paid for ${currentMonth}`);
-        remainingShares -= userShare.shares;
         continue;
       }
 
-      if (remainingShares <= 0) break;
+      // Each recipient's owed amount is a fixed pro-rata slice of the total burner
+      // balance, based on ALL eligible shares (not just the ones still unpaid) —
+      // so an already-paid user's share stays unclaimed in the wallet instead of
+      // being redistributed to whoever's left in the loop.
+      const owedRaw = (totalRaw * BigInt(userShare.shares)) / BigInt(totalShares);
+      if (owedRaw <= zero) continue;
 
-      const remainingRaw = workPools.reduce((sum, p) => sum + p.rawBalance, zero);
-      if (remainingRaw <= zero) break;
-
-      const owedRaw = (remainingRaw * BigInt(userShare.shares)) / BigInt(remainingShares);
-      if (owedRaw <= zero) {
-        remainingShares -= userShare.shares;
+      const availableRaw = workPools.reduce((sum, p) => sum + p.rawBalance, zero);
+      if (availableRaw < owedRaw) {
+        console.log(
+          `Skipping ${userShare.username} — burner underfunded for their $${ethers.formatUnits(owedRaw, workPools[0].decimals)} share`,
+        );
         continue;
       }
 
@@ -682,7 +684,6 @@ export class RewardsService {
         console.log(
           `Skipping ${userShare.username} — no single token covers their $${ethers.formatUnits(owedRaw, workPools[0].decimals)} share`,
         );
-        remainingShares -= userShare.shares;
         continue;
       }
 
@@ -701,7 +702,6 @@ export class RewardsService {
         ],
       });
       this.applySlices([slice]);
-      remainingShares -= userShare.shares;
     }
 
     if (recipients.length === 0) {
