@@ -198,14 +198,37 @@ export async function getBurnerHealth(): Promise<{
   balanceEth: number;
   minEth: number;
   healthy: boolean;
+  tokens: { symbol: 'USDT' | 'USDC'; balance: number }[];
 }> {
   const status = await verifyBurnerWallet();
   let balanceEth = 0;
+  const tokens: { symbol: 'USDT' | 'USDC'; balance: number }[] = [];
   if (burnerWallet) {
     try {
       balanceEth = Number(ethers.formatEther(await provider.getBalance(burnerWallet.address)));
     } catch (err: any) {
       logger.warn(`getBurnerHealth balance read failed: ${err.message}`);
+    }
+    try {
+      const [usdtAddress, usdcAddress, amountDecimals] = await Promise.all([
+        hntrContract.usdt(),
+        hntrContract.usdc(),
+        getContractAmountDecimals(),
+      ]);
+      const stablecoinBalances = await Promise.all(
+        (
+          [
+            { symbol: 'USDT' as const, address: usdtAddress },
+            { symbol: 'USDC' as const, address: usdcAddress },
+          ] as const
+        ).map(async ({ symbol, address }) => {
+          const rawBalance = await getErc20(address).balanceOf(burnerWallet!.address);
+          return { symbol, balance: Number(Number(ethers.formatUnits(rawBalance, amountDecimals)).toFixed(2)) };
+        }),
+      );
+      tokens.push(...stablecoinBalances);
+    } catch (err: any) {
+      logger.warn(`getBurnerHealth stablecoin balance read failed: ${err.message}`);
     }
   }
   const minEth = ENV.BURNER_MIN_ETH;
@@ -216,6 +239,7 @@ export async function getBurnerHealth(): Promise<{
     balanceEth,
     minEth,
     healthy: status.configured && status.matches && balanceEth >= minEth,
+    tokens,
   };
 }
 
