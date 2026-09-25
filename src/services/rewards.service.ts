@@ -2,6 +2,7 @@ import User, { IUser } from '../models/User';
 import Payout, { IPayoutBreakdownEntry } from '../models/Payout';
 import AchievementBonus from '../models/AchievementBonus';
 import DisbursementBatch, { IDispersalEntry } from '../models/DisbursementBatch';
+import LeadershipPoolSnapshot from '../models/LeadershipPoolSnapshot';
 import { ethers } from 'ethers';
 import {
   hntrContract,
@@ -102,6 +103,74 @@ export class RewardsService {
         return { symbol, address, decimals: amountDecimals, rawBalance };
       }),
     );
+  }
+
+  /**
+   * Returns the leadership wallet's stablecoin balance to use as the pro-rata split's
+   * reference total for a given month — locking it in the database the first time it
+   * is requested that month and reusing the locked figure afterwards. Without this,
+   * reading the wallet's LIVE balance at distribution time would use a smaller number
+   * once the admin has already moved funds out to the burner wallet to pay with,
+   * shrinking every recipient's share for reasons unrelated to their entitlement.
+   */
+  static async getOrLockLeadershipReferencePool(month: string): Promise<StablecoinPool[]> {
+    const existing = await LeadershipPoolSnapshot.findOne({ month }).lean();
+    if (existing) {
+      return existing.tokens.map((t) => ({
+        symbol: t.symbol,
+        address: t.address,
+        decimals: t.decimals,
+        rawBalance: BigInt(t.rawBalance),
+      }));
+    }
+
+    const leadershipWallet = await hntrContract.leadershipWallet();
+    const livePools = await this.loadStablecoinPools(String(leadershipWallet));
+
+    // Upsert with $setOnInsert so a concurrent first call this month can't overwrite
+    // the value another concurrent call already locked in.
+    const snapshot = await LeadershipPoolSnapshot.findOneAndUpdate(
+      { month },
+      {
+        $setOnInsert: {
+          month,
+          capturedAt: new Date(),
+          tokens: livePools.map((p) => ({
+            symbol: p.symbol,
+            address: p.address,
+            decimals: p.decimals,
+            rawBalance: p.rawBalance.toString(),
+          })),
+        },
+      },
+      { upsert: true, new: true },
+    ).lean();
+
+    return snapshot!.tokens.map((t) => ({
+      symbol: t.symbol,
+      address: t.address,
+      decimals: t.decimals,
+      rawBalance: BigInt(t.rawBalance),
+    }));
+  }
+
+  /**
+   * Read-only lookup of this month's locked leadership reference pool, if the admin
+   * has already opened the distribute preview (or run a distribution) this month.
+   * Returns null when nothing is locked yet, so callers can fall back to a live
+   * estimate — this must NOT create/lock a snapshot itself, or an ordinary user
+   * loading their leadership status page could freeze the month's figure before
+   * the admin ever intends to distribute.
+   */
+  static async peekLeadershipReferencePool(month: string): Promise<StablecoinPool[] | null> {
+    const existing = await LeadershipPoolSnapshot.findOne({ month }).lean();
+    if (!existing) return null;
+    return existing.tokens.map((t) => ({
+      symbol: t.symbol,
+      address: t.address,
+      decimals: t.decimals,
+      rawBalance: BigInt(t.rawBalance),
+    }));
   }
 
   /**
@@ -552,7 +621,21 @@ export class RewardsService {
 
     const leadershipWallet = await hntrContract.leadershipWallet();
     const walletBalances = await this.getPoolWalletBalances(leadershipWallet);
-    const poolBalanceUSD = walletBalances.totalUSD;
+
+    // Once the admin has opened this month's distribute preview (or run a
+    // distribution), the payout math is locked to that figure — match it here too,
+    // so a user's "estimated next payout" doesn't keep drifting after the admin
+    // moves funds out to the burner wallet to actually pay it.
+    const month = new Date().toISOString().slice(0, 7);
+    const lockedPools = await this.peekLeadershipReferencePool(month);
+    const poolBalanceUSD = lockedPools
+      ? Number(
+          ethers.formatUnits(
+            lockedPools.reduce((sum, p) => sum + p.rawBalance, BigInt(0)),
+            lockedPools[0]?.decimals ?? 6,
+          ),
+        )
+      : walletBalances.totalUSD;
 
     const eligibleUsers = await User.find({
       rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
@@ -614,12 +697,17 @@ export class RewardsService {
       return [];
     }
 
+    const currentMonth = new Date().toISOString().slice(0, 7);
+
     // Reference pool for the fixed pro-rata split is the LEADERSHIP wallet's balance
     // (same figure the admin preview shows as "Pool Balance") — not the burner's,
     // which the admin may only fund with the smaller amount actually owed to unpaid
     // recipients this run. Keeping the denominator tied to the burner's balance would
     // make each recipient's owed amount depend on how much happened to be funded.
-    const referencePools = await this.loadStablecoinPools(String(leadershipWallet));
+    // It's locked for the month on first read (see getOrLockLeadershipReferencePool)
+    // so moving funds to the burner in between the preview and this run doesn't
+    // shrink the denominator and shortchange recipients.
+    const referencePools = await this.getOrLockLeadershipReferencePool(currentMonth);
 
     referencePools.forEach((p) =>
       console.log(
@@ -651,7 +739,6 @@ export class RewardsService {
       return [];
     }
 
-    const currentMonth = new Date().toISOString().slice(0, 7);
     const recipients: PlannedRecipient[] = [];
     // Actual spendable liquidity — whatever the admin funded the burner with.
     const workPools = await this.loadStablecoinPools(burner.address);
