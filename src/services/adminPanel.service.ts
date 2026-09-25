@@ -1167,7 +1167,6 @@ export class AdminPanelService {
 
   static async getLeadershipPreview() {
     const leadershipWallet = await hntrContract.leadershipWallet();
-    const balances = await readWalletStablecoinBalances(String(leadershipWallet));
     const health = await RewardsService.getDisbursementWalletHealth(String(leadershipWallet));
 
     const eligibleUsers = await User.find({ rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] } })
@@ -1175,6 +1174,22 @@ export class AdminPanelService {
       .lean();
 
     const month = new Date().toISOString().slice(0, 7);
+    // Locked reference pool for the month — same figure the actual distribution run
+    // uses (see RewardsService.getOrLockLeadershipReferencePool) — so the payout
+    // percentages shown here never drift from what the burner will actually pay out,
+    // even after the admin moves funds from the leadership wallet to the burner.
+    const referencePools = await RewardsService.getOrLockLeadershipReferencePool(month);
+    const balances = {
+      tokens: referencePools.map((p) => ({
+        symbol: p.symbol,
+        balance: Number(ethers.formatUnits(p.rawBalance, p.decimals)),
+      })),
+      totalUsd: Number(
+        referencePools
+          .reduce((sum, p) => sum + Number(ethers.formatUnits(p.rawBalance, p.decimals)), 0)
+          .toFixed(2),
+      ),
+    };
     const paidUsernames = new Set(
       (
         await Payout.find({ month, status: 'PAID' }).select('username').lean()
