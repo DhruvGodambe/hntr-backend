@@ -23,7 +23,12 @@ import {
 import { getLogsViaEtherscan } from './etherscan.service';
 import { AuthService } from './auth.service';
 import { ENV } from '../config/env';
-import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares, getRankLadderIndex } from '../constants';
+import {
+  getLeadershipRank,
+  getLeadershipShares,
+  getRankLadderIndex,
+  leadershipEligibleFilter,
+} from '../constants';
 import { paginatedResponse, sanitizeSearch } from '../utils/pagination';
 import { normalizeOpenSea, normalizeTags, PoolOpenSeaInput } from './strategyPool.service';
 import { logger } from '../utils/logger';
@@ -544,6 +549,9 @@ export class AdminPanelService {
 
     // Rank only for this endpoint — membership free force goes through company-wallet
     // overrideMembershipTier + recordMembershipOverride.
+    // Before the first force, the current rank is the organic one; keep it so
+    // leadership shares stay tied to what volume actually qualifies for.
+    if (!user.isForcedRank) user.organicRank = previousRank as typeof user.rank;
     user.rank = nextRank as typeof user.rank;
     user.isForcedRank = true;
     if (user.walletAddress) {
@@ -583,15 +591,12 @@ export class AdminPanelService {
 
     try {
       const { NotificationService } = await import('./notification.service');
-      const shares = getLeadershipShares(nextRank);
+      const shares = getLeadershipShares(getLeadershipRank(user));
       await NotificationService.createQuiet({
         walletAddress: user.walletAddress,
         type: 'RANK_UP',
         title: `Rank upgraded to ${nextRank}`,
-        sub:
-          shares > 0
-            ? `You now have ${shares} leadership share${shares === 1 ? '' : 's'} in the monthly pool. Achievement bonuses unlock as your team volume qualifies.`
-            : `Keep growing — Hunter rank and above unlock leadership pool shares. Achievement bonuses unlock as your team volume qualifies.`,
+        sub: `Leadership pool shares and achievement bonuses unlock as your team volume qualifies for this rank.`,
         link: 'VIEW NETWORK',
         meta: {
           previousRank,
@@ -1169,8 +1174,8 @@ export class AdminPanelService {
     const leadershipWallet = await hntrContract.leadershipWallet();
     const health = await RewardsService.getDisbursementWalletHealth(String(leadershipWallet));
 
-    const eligibleUsers = await User.find({ rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] } })
-      .select('username rank walletAddress')
+    const eligibleUsers = await User.find(leadershipEligibleFilter())
+      .select('username rank isForcedRank organicRank walletAddress')
       .lean();
 
     const month = new Date().toISOString().slice(0, 7);
@@ -1199,11 +1204,12 @@ export class AdminPanelService {
     let totalShares = 0;
     const hunters = eligibleUsers
       .map((u) => {
-        const shares = getLeadershipShares(u.rank);
+        const leadershipRank = getLeadershipRank(u);
+        const shares = getLeadershipShares(leadershipRank);
         totalShares += shares;
         return {
           username: u.username,
-          rank: u.rank,
+          rank: leadershipRank,
           shares,
           walletAddress: u.walletAddress,
           alreadyPaid: paidUsernames.has(u.username),

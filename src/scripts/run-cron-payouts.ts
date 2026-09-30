@@ -14,7 +14,7 @@ import AchievementBonus from '../models/AchievementBonus';
 import { RewardsService } from '../services/rewards.service';
 import { runMonthlyLeadershipPayout } from '../jobs/leadership-cron';
 import { hntrContract, provider, getErc20, getContractAmountDecimals } from '../services/contract.service';
-import { LEADERSHIP_ELIGIBLE_RANKS, getLeadershipShares } from '../constants';
+import { getLeadershipRank, getLeadershipShares, leadershipEligibleFilter } from '../constants';
 
 async function diagnose() {
   const [rankWallet, leadershipWallet, burnerAddr, usdtAddress, usdcAddress, amountDecimals] =
@@ -57,8 +57,8 @@ async function diagnose() {
   ]);
 
   const pending = await AchievementBonus.find({ status: 'PENDING' }).sort({ createdAt: 1 }).lean();
-  const eligible = await User.find({ rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] } })
-    .select('username walletAddress rank')
+  const eligible = await User.find(leadershipEligibleFilter())
+    .select('username walletAddress rank isForcedRank organicRank')
     .lean();
   const month = new Date().toISOString().slice(0, 7);
   const existingPayouts = await Payout.find({ month }).lean();
@@ -102,8 +102,8 @@ async function diagnose() {
           },
           eligibleUsers: eligible.map((u) => ({
             username: u.username,
-            rank: u.rank,
-            shares: getLeadershipShares(u.rank),
+            rank: getLeadershipRank(u),
+            shares: getLeadershipShares(getLeadershipRank(u)),
             wallet: u.walletAddress,
           })),
           existingPayoutsThisMonth: existingPayouts.map((p) => ({

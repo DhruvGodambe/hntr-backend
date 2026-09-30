@@ -307,7 +307,12 @@ export class NetworkService {
       user.rank = displayRank;
     }
 
-    if (displayChanged || clearedForcedRank) {
+    const organicChanged = user.organicRank !== volumeQualifiedRank;
+    if (organicChanged) {
+      user.organicRank = volumeQualifiedRank as typeof user.rank;
+    }
+
+    if (displayChanged || clearedForcedRank || organicChanged) {
       await user.save();
     }
 

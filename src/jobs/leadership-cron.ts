@@ -6,7 +6,7 @@ import { NetworkService } from '../services/network.service';
 import AchievementBonus from '../models/AchievementBonus';
 import Payout from '../models/Payout';
 import User from '../models/User';
-import { LEADERSHIP_ELIGIBLE_RANKS } from '../constants';
+import { leadershipEligibleFilter } from '../constants';
 import { initVoucherCron } from './voucher-cron';
 
 const CRON_TZ = { timezone: 'UTC' as const };
@@ -95,9 +95,7 @@ async function backfillLeadershipPayoutIfNeeded() {
   if (mongoose.connection.readyState !== 1) return;
 
   const month = new Date().toISOString().slice(0, 7);
-  const eligibleCount = await User.countDocuments({
-    rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
-  });
+  const eligibleCount = await User.countDocuments(leadershipEligibleFilter());
   if (eligibleCount === 0) return;
 
   const paidThisMonth = await Payout.countDocuments({
