@@ -121,6 +121,31 @@ export function getLeadershipShares(rank: string | null | undefined): number {
 }
 
 /**
+ * Rank used for leadership shares. Admin-forced ranks are display-only (same as
+ * achievement bonuses), so a forced user is weighted by the rank their volume
+ * actually qualifies for (`organicRank`), not the forced display rank.
+ */
+export function getLeadershipRank(u: {
+  rank?: string | null;
+  isForcedRank?: boolean | null;
+  organicRank?: string | null;
+}): string {
+  if (u.isForcedRank) return u.organicRank || Rank.NONE;
+  return u.rank || Rank.NONE;
+}
+
+/** Mongo filter matching users whose leadership rank is Hunter or above. */
+export function leadershipEligibleFilter() {
+  const ranks = [...LEADERSHIP_ELIGIBLE_RANKS];
+  return {
+    $or: [
+      { isForcedRank: { $ne: true }, rank: { $in: ranks } },
+      { isForcedRank: true, organicRank: { $in: ranks } },
+    ],
+  };
+}
+
+/**
  * One-time rank achievement bonuses (PDF §5). Paid from the burner wallet,
  * which the admin funds from the rankWallet. Must stay in lockstep with RewardsService.
  */

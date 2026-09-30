@@ -22,6 +22,11 @@ export interface IUser extends Document {
    */
   isForcedRank: boolean;
   /**
+   * Rank the user's team volume + membership actually qualify for, maintained by
+   * NetworkService.evaluateRank. Leadership shares use this while isForcedRank is set.
+   */
+  organicRank?: 'None' | 'Scout' | 'Tracker' | 'Ranger' | 'Hunter' | 'Elite Hunter' | 'Master Hunter' | 'Legend Hunter';
+  /**
    * True when company/admin set membership tier on-chain via free override
    * (overrideMembershipTier) rather than a paid purchase/upgrade.
    * Cleared on a subsequent paid MembershipUpgraded.
@@ -104,6 +109,11 @@ const UserSchema: Schema = new Schema({
     default: 'None',
   },
   rank: {
+    type: String,
+    enum: ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Elite Hunter', 'Master Hunter', 'Legend Hunter'],
+    default: 'None',
+  },
+  organicRank: {
     type: String,
     enum: ['None', 'Scout', 'Tracker', 'Ranger', 'Hunter', 'Elite Hunter', 'Master Hunter', 'Legend Hunter'],
     default: 'None',

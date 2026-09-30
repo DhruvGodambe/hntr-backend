@@ -16,8 +16,9 @@ import {
 import { ENV } from '../config/env';
 import {
   getAchievementBonusAmount,
+  getLeadershipRank,
   getLeadershipShares,
-  LEADERSHIP_ELIGIBLE_RANKS,
+  leadershipEligibleFilter,
   LEADERSHIP_SHARES,
   RANK_ACHIEVEMENT_BONUSES,
   ranksNewlyAchieved,
@@ -616,7 +617,7 @@ export class RewardsService {
       await NetworkService.syncAdminOverrides(user);
     }
     const rank = user?.rank || 'None';
-    const shares = getLeadershipShares(rank);
+    const shares = getLeadershipShares(user ? getLeadershipRank(user) : rank);
     const hasShares = shares > 0;
 
     const leadershipWallet = await hntrContract.leadershipWallet();
@@ -637,13 +638,13 @@ export class RewardsService {
         )
       : walletBalances.totalUSD;
 
-    const eligibleUsers = await User.find({
-      rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
-    }).select('rank walletAddress username');
+    const eligibleUsers = await User.find(leadershipEligibleFilter()).select(
+      'rank isForcedRank organicRank walletAddress username',
+    );
 
     let totalShares = 0;
     for (const u of eligibleUsers) {
-      totalShares += getLeadershipShares(u.rank);
+      totalShares += getLeadershipShares(getLeadershipRank(u));
     }
 
     const estimatedPayoutUSD =
@@ -688,9 +689,7 @@ export class RewardsService {
     const leadershipWallet = await hntrContract.leadershipWallet();
     const burner = this.requireBurnerWallet();
 
-    const eligibleUsers = await User.find({
-      rank: { $in: [...LEADERSHIP_ELIGIBLE_RANKS] },
-    });
+    const eligibleUsers = await User.find(leadershipEligibleFilter());
 
     if (eligibleUsers.length === 0) {
       console.log('No users with leadership shares — skipping payouts.');
@@ -724,12 +723,13 @@ export class RewardsService {
 
     let totalShares = 0;
     const userShares = eligibleUsers.map((u) => {
-      const shares = getLeadershipShares(u.rank);
+      const leadershipRank = getLeadershipRank(u);
+      const shares = getLeadershipShares(leadershipRank);
       totalShares += shares;
       return {
         username: u.username,
         walletAddress: u.walletAddress.toLowerCase(),
-        rank: u.rank,
+        rank: leadershipRank,
         shares,
       };
     });
