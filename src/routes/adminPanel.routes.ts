@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { AdminPanelController } from '../controllers/adminPanel.controller';
 import { VoucherAdminController } from '../controllers/voucherAdmin.controller';
+import { PriorityLineAdminController } from '../controllers/priorityLineAdmin.controller';
 import { requireAdminPanelAuth, requireAdminPrivileged } from '../middlewares/adminPanelAuth.middleware';
 import { adminApiRateLimit, adminLoginRateLimit, adminRegisterRateLimit } from '../middlewares/rateLimiter.middleware';
 import { verifyTurnstile } from '../middlewares/turnstile.middleware';
@@ -91,5 +92,14 @@ router.get('/vouchers/ledger', VoucherAdminController.listLedger);
 router.get('/vouchers/burner', VoucherAdminController.getBurner);
 router.post('/vouchers/burner/record', requireAdminPrivileged, VoucherAdminController.recordBurner);
 router.post('/vouchers/reconcile', requireAdminPrivileged, VoucherAdminController.reconcile);
+
+// --- Priority Line ---
+router.get('/priority-line/settings', PriorityLineAdminController.getSettings);
+router.post('/priority-line/settings', requireAdminPrivileged, PriorityLineAdminController.setSettings);
+router.get('/priority-line/stats', PriorityLineAdminController.getStats);
+router.get('/priority-line/deposits', PriorityLineAdminController.listDeposits);
+router.get('/priority-line/withdrawals', PriorityLineAdminController.listWithdrawals);
+router.post('/priority-line/withdrawals/:id/complete', requireAdminPrivileged, PriorityLineAdminController.completeWithdrawal);
+router.post('/priority-line/withdrawals/:id/reject', requireAdminPrivileged, PriorityLineAdminController.rejectWithdrawal);
 
 export default router;

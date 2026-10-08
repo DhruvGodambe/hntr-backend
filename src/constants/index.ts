@@ -201,3 +201,17 @@ export function getRankLadderIndex(rank: string | null | undefined): number {
   if (!rank || rank === Rank.NONE) return -1;
   return RANK_LADDER.indexOf(rank as Rank);
 }
+
+/**
+ * Priority Line: total USD a member can reserve across all active deposits, by
+ * membership tier. Mirrors the "Max Deposit per Pool" figures on the membership page.
+ */
+export const PRIORITY_LINE_TIER_CAPS: Record<Tier, number> = {
+  [Tier.NONE]: 0,
+  [Tier.BRONZE]: 400,
+  [Tier.SILVER]: 1500,
+  [Tier.GOLD]: 4000,
+  [Tier.PLATINUM]: 8000,
+  [Tier.DIAMOND]: 20000,
+};
+export const PRIORITY_LINE_MIN_DEPOSIT_USD = 1;
