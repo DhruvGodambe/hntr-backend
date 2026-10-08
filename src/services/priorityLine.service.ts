@@ -356,28 +356,44 @@ export class PriorityLineService {
   }
 
   static async getStats() {
-    const [counted, pending, withdrawn, review] = await Promise.all([
-      PriorityLineDeposit.aggregate([
-        { $match: { status: { $in: COUNTED_STATUSES } } },
-        { $group: { _id: null, total: { $sum: '$amountUsd' }, count: { $sum: 1 } } },
-      ]),
-      PriorityLineDeposit.aggregate([
-        { $match: { status: 'WITHDRAWAL_REQUESTED' } },
-        { $group: { _id: null, total: { $sum: '$amountUsd' }, count: { $sum: 1 } } },
-      ]),
-      PriorityLineDeposit.aggregate([
-        { $match: { status: 'WITHDRAWN' } },
-        { $group: { _id: null, total: { $sum: '$amountUsd' }, count: { $sum: 1 } } },
-      ]),
-      PriorityLineDeposit.countDocuments({ status: 'REVIEW' }),
-    ]);
+    const groups: { _id: { token: PriorityToken; status: PriorityLineStatus }; total: number; count: number }[] =
+      await PriorityLineDeposit.aggregate([
+        { $group: { _id: { token: '$token', status: '$status' }, total: { $sum: '$amountUsd' }, count: { $sum: 1 } } },
+      ]);
+
+    const blank = () => ({ inLineUsd: 0, activeDeposits: 0, pendingWithdrawals: 0, pendingWithdrawalsUsd: 0, withdrawnUsd: 0 });
+    const byToken: Record<PriorityToken, ReturnType<typeof blank>> = { USDT: blank(), USDC: blank() };
+    let reviewDeposits = 0;
+
+    for (const g of groups) {
+      const t = byToken[g._id.token];
+      if (!t) continue;
+      if (COUNTED_STATUSES.includes(g._id.status)) {
+        t.inLineUsd += g.total;
+        t.activeDeposits += g.count;
+      }
+      if (g._id.status === 'WITHDRAWAL_REQUESTED') {
+        t.pendingWithdrawals += g.count;
+        t.pendingWithdrawalsUsd += g.total;
+      }
+      if (g._id.status === 'WITHDRAWN') t.withdrawnUsd += g.total;
+      if (g._id.status === 'REVIEW') reviewDeposits += g.count;
+    }
+    for (const t of Object.values(byToken)) {
+      t.inLineUsd = roundUsd(t.inLineUsd);
+      t.pendingWithdrawalsUsd = roundUsd(t.pendingWithdrawalsUsd);
+      t.withdrawnUsd = roundUsd(t.withdrawnUsd);
+    }
+
+    const all = Object.values(byToken);
     return {
-      totalDepositedUsd: roundUsd(counted[0]?.total ?? 0),
-      activeDeposits: counted[0]?.count ?? 0,
-      pendingWithdrawals: pending[0]?.count ?? 0,
-      pendingWithdrawalsUsd: roundUsd(pending[0]?.total ?? 0),
-      withdrawnUsd: roundUsd(withdrawn[0]?.total ?? 0),
-      reviewDeposits: review,
+      totalDepositedUsd: roundUsd(all.reduce((s, t) => s + t.inLineUsd, 0)),
+      activeDeposits: all.reduce((s, t) => s + t.activeDeposits, 0),
+      pendingWithdrawals: all.reduce((s, t) => s + t.pendingWithdrawals, 0),
+      pendingWithdrawalsUsd: roundUsd(all.reduce((s, t) => s + t.pendingWithdrawalsUsd, 0)),
+      withdrawnUsd: roundUsd(all.reduce((s, t) => s + t.withdrawnUsd, 0)),
+      reviewDeposits,
+      byToken,
     };
   }
 
@@ -416,11 +432,100 @@ export class PriorityLineService {
       filter.$or = or;
     }
 
+    // sort=line is the queue view: #1 first. Deposits without a line number (REVIEW) aren't in
+    // the queue, and would otherwise sort first, so they are left out of this view.
+    const queue = String(query.sort ?? '') === 'line';
+    if (queue) filter.lineNumber = { $type: 'number' };
+
     const [rows, total] = await Promise.all([
-      PriorityLineDeposit.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      PriorityLineDeposit.find(filter)
+        .sort(queue ? { lineNumber: 1 } : { createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       PriorityLineDeposit.countDocuments(filter),
     ]);
     return paginatedResponse(await PriorityLineService.withUsernames(rows), total, page, limit);
+  }
+
+  /**
+   * One row per member who has deposited: totals, tier cap and remaining room.
+   * sort=amount (default, biggest first) or sort=queue (earliest line number first).
+   */
+  static async listMembers(query: Record<string, unknown>) {
+    const { page, limit, skip } = parsePagination(query);
+    const sortQueue = String(query.sort ?? '') === 'queue';
+
+    const match: Record<string, any> = {};
+    const search = sanitizeSearch(query.search);
+    if (search) {
+      const rx = new RegExp(search, 'i');
+      const matchedUsers = await User.find({ username: rx }).select('walletAddress').limit(50).lean();
+      match.$or = [{ walletAddress: rx }, { walletAddress: { $in: matchedUsers.map((u) => u.walletAddress) } }];
+    }
+
+    const counted = { $in: ['$status', COUNTED_STATUSES] };
+    const sum = (cond: any) => ({ $sum: { $cond: [cond, '$amountUsd', 0] } });
+
+    const [result] = await PriorityLineDeposit.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: '$walletAddress',
+          inLineUsd: sum(counted),
+          pendingWithdrawalUsd: sum({ $eq: ['$status', 'WITHDRAWAL_REQUESTED'] }),
+          withdrawnUsd: sum({ $eq: ['$status', 'WITHDRAWN'] }),
+          reviewUsd: sum({ $eq: ['$status', 'REVIEW'] }),
+          deposits: { $sum: 1 },
+          activeDeposits: { $sum: { $cond: [counted, 1, 0] } },
+          firstLineNumber: { $min: { $cond: [counted, '$lineNumber', null] } },
+          lastDepositAt: { $max: '$createdAt' },
+        },
+      },
+      { $addFields: { noLine: { $cond: [{ $eq: ['$firstLineNumber', null] }, 1, 0] } } },
+      {
+        $facet: {
+          rows: [
+            { $sort: sortQueue ? { noLine: 1, firstLineNumber: 1, _id: 1 } : { inLineUsd: -1, _id: 1 } },
+            { $skip: skip },
+            { $limit: limit },
+          ],
+          total: [{ $count: 'n' }],
+        },
+      },
+    ]);
+
+    const rows: Record<string, any>[] = result?.rows ?? [];
+    const total: number = result?.total?.[0]?.n ?? 0;
+
+    const wallets = rows.map((r) => r._id as string);
+    const users = await User.find({ walletAddress: { $in: wallets } })
+      .select('walletAddress username tier')
+      .lean();
+    const byWallet = new Map(users.map((u) => [u.walletAddress, u]));
+
+    const items = rows.map((r) => {
+      const u = byWallet.get(r._id);
+      const tier = (u?.tier as Tier | undefined) ?? Tier.NONE;
+      const cap = PRIORITY_LINE_TIER_CAPS[tier] ?? 0;
+      const inLineUsd = roundUsd(r.inLineUsd);
+      return {
+        walletAddress: r._id as string,
+        username: u?.username ?? null,
+        tier,
+        cap,
+        inLineUsd,
+        remainingUsd: Math.max(0, roundUsd(cap - inLineUsd)),
+        pendingWithdrawalUsd: roundUsd(r.pendingWithdrawalUsd),
+        withdrawnUsd: roundUsd(r.withdrawnUsd),
+        reviewUsd: roundUsd(r.reviewUsd),
+        deposits: r.deposits as number,
+        activeDeposits: r.activeDeposits as number,
+        firstLineNumber: (r.firstLineNumber as number | null) ?? null,
+        lastDepositAt: r.lastDepositAt as Date,
+      };
+    });
+    return paginatedResponse(items, total, page, limit);
   }
 
   /** Withdrawal requests: status=REQUESTED (default, oldest first), WITHDRAWN, or all. */

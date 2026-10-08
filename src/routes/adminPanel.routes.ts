@@ -98,6 +98,7 @@ router.get('/priority-line/settings', PriorityLineAdminController.getSettings);
 router.post('/priority-line/settings', requireAdminPrivileged, PriorityLineAdminController.setSettings);
 router.get('/priority-line/stats', PriorityLineAdminController.getStats);
 router.get('/priority-line/deposits', PriorityLineAdminController.listDeposits);
+router.get('/priority-line/members', PriorityLineAdminController.listMembers);
 router.get('/priority-line/withdrawals', PriorityLineAdminController.listWithdrawals);
 router.post('/priority-line/withdrawals/:id/complete', requireAdminPrivileged, PriorityLineAdminController.completeWithdrawal);
 router.post('/priority-line/withdrawals/:id/reject', requireAdminPrivileged, PriorityLineAdminController.rejectWithdrawal);
