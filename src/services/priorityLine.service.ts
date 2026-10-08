@@ -62,10 +62,37 @@ async function resolveTokenAddress(token: PriorityToken): Promise<string> {
   return token === 'USDT' ? hntrContract.usdt() : hntrContract.usdc();
 }
 
-function dto(d: IPriorityLineDeposit | Record<string, any>) {
+/**
+ * The stored `lineNumber` is a permanent ordering ticket (issued by a counter, never reused).
+ * What members and admins see as "Line #" is the live position: the rank of that ticket among
+ * deposits still in line (ACTIVE or withdrawal pending). When a deposit is withdrawn,
+ * everyone behind it moves up, and the next deposit joins at the back of the shortened line.
+ */
+async function loadQueue(): Promise<number[]> {
+  const filter: Record<string, any> = { status: { $in: COUNTED_STATUSES }, lineNumber: { $type: 'number' } };
+  const rows = await PriorityLineDeposit.find(filter).select('lineNumber').lean();
+  return rows.map((r) => r.lineNumber as number).sort((a, b) => a - b);
+}
+
+/** 1-based position of a ticket in the (sorted) queue, or null if it isn't in line. */
+function positionOfTicket(queue: number[], ticket: number | null | undefined): number | null {
+  if (typeof ticket !== 'number') return null;
+  let lo = 0;
+  let hi = queue.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (queue[mid] === ticket) return mid + 1;
+    if (queue[mid] < ticket) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return null;
+}
+
+function dto(d: IPriorityLineDeposit | Record<string, any>, queue: number[]) {
+  const inLine = COUNTED_STATUSES.includes(d.status as PriorityLineStatus);
   return {
     id: String(d._id),
-    lineNumber: d.lineNumber ?? null,
+    lineNumber: inLine ? positionOfTicket(queue, d.lineNumber) : null,
     token: d.token as PriorityToken,
     amountUsd: d.amountUsd as number,
     txHash: d.txHash as string,
@@ -103,14 +130,16 @@ export class PriorityLineService {
   // ── member ───────────────────────────────────────────────────────────────
   static async getOverview(walletAddress: string) {
     const wallet = walletAddress.toLowerCase();
-    const [{ tier, cap }, settings, rows] = await Promise.all([
+    const [{ tier, cap }, settings, rows, queue] = await Promise.all([
       getCap(wallet),
       getSettingsDoc(),
       PriorityLineDeposit.find({ walletAddress: wallet }).sort({ createdAt: -1 }).lean(),
+      loadQueue(),
     ]);
     const counted = rows.filter((r) => COUNTED_STATUSES.includes(r.status));
     const used = roundUsd(counted.reduce((t, r) => t + r.amountUsd, 0));
-    const lineNumbers = counted.map((r) => r.lineNumber).filter((n): n is number => typeof n === 'number');
+    const deposits = rows.map((r) => dto(r, queue));
+    const positions = deposits.map((d) => d.lineNumber).filter((n): n is number => typeof n === 'number');
 
     return {
       tier,
@@ -118,9 +147,9 @@ export class PriorityLineService {
       used,
       remaining: Math.max(0, roundUsd(cap - used)),
       minDepositUsd: PRIORITY_LINE_MIN_DEPOSIT_USD,
-      firstLineNumber: lineNumbers.length ? Math.min(...lineNumbers) : null,
+      firstLineNumber: positions.length ? Math.min(...positions) : null,
       depositWallet: settings?.priorityLineDepositWallet || null,
-      deposits: rows.map(dto),
+      deposits,
     };
   }
 
@@ -269,14 +298,15 @@ export class PriorityLineService {
         }
 
         if (fits) {
-          logger.info(`Priority Line deposit ${fmtUsd(amountUsd)} ${token} from ${wallet} → line #${doc.lineNumber}`);
+          const position = positionOfTicket(await loadQueue(), doc.lineNumber);
+          logger.info(`Priority Line deposit ${fmtUsd(amountUsd)} ${token} from ${wallet} → position #${position} (ticket ${doc.lineNumber})`);
           await NotificationService.createQuiet({
             walletAddress: wallet,
             type: 'PRIORITY_LINE_DEPOSIT',
-            title: `Priority Line spot reserved — #${doc.lineNumber}`,
+            title: `Priority Line spot reserved — #${position}`,
             sub: `${fmtUsd(amountUsd)} ${token} deposited`,
             link: '/priority-line',
-            meta: { lineNumber: doc.lineNumber, amountUsd, token, txHash },
+            meta: { lineNumber: position, amountUsd, token, txHash },
             dedupeKey: `PRIORITY_LINE_DEPOSIT:${txHash}:${m.logIndex}`,
           });
         } else {
@@ -295,7 +325,8 @@ export class PriorityLineService {
         }
         results.push(doc);
       }
-      return { deposits: results.map(dto) };
+      const queue = await loadQueue();
+      return { deposits: results.map((d) => dto(d, queue)) };
     });
   }
 
@@ -316,17 +347,20 @@ export class PriorityLineService {
       throw new PriorityLineError('NOT_WITHDRAWABLE', 'This deposit can no longer be withdrawn', 409);
     }
 
-    logger.info(`Priority Line withdrawal requested: line #${doc.lineNumber} by ${wallet}`);
+    // Still holds its spot until the admin pays, so it still has a position here.
+    const queue = await loadQueue();
+    const position = positionOfTicket(queue, doc.lineNumber);
+    logger.info(`Priority Line withdrawal requested: position #${position} (ticket ${doc.lineNumber}) by ${wallet}`);
     await NotificationService.createQuiet({
       walletAddress: wallet,
       type: 'PRIORITY_LINE_WITHDRAWAL_REQUESTED',
-      title: `Withdrawal requested — line #${doc.lineNumber}`,
+      title: `Withdrawal requested — line #${position}`,
       sub: `${fmtUsd(doc.amountUsd)} ${doc.token} · pending admin review`,
       link: '/priority-line',
-      meta: { lineNumber: doc.lineNumber, amountUsd: doc.amountUsd, token: doc.token },
+      meta: { lineNumber: position, amountUsd: doc.amountUsd, token: doc.token },
       dedupeKey: `PRIORITY_LINE_WITHDRAWAL_REQUESTED:${doc.id}:${doc.withdrawalRequestedAt?.getTime()}`,
     });
-    return dto(doc);
+    return dto(doc, queue);
   }
 
   // ── admin ────────────────────────────────────────────────────────────────
@@ -399,12 +433,15 @@ export class PriorityLineService {
 
   private static async withUsernames(rows: Record<string, any>[]) {
     const wallets = Array.from(new Set(rows.map((r) => r.walletAddress as string)));
-    const users = await User.find({ walletAddress: { $in: wallets } })
-      .select('walletAddress username')
-      .lean();
+    const [users, queue] = await Promise.all([
+      User.find({ walletAddress: { $in: wallets } })
+        .select('walletAddress username')
+        .lean(),
+      loadQueue(),
+    ]);
     const names = new Map(users.map((u) => [u.walletAddress, u.username]));
     return rows.map((r) => ({
-      ...dto(r),
+      ...dto(r, queue),
       walletAddress: r.walletAddress as string,
       username: names.get(r.walletAddress) ?? null,
       depositWallet: r.depositWallet as string,
@@ -428,14 +465,21 @@ export class PriorityLineService {
         { txHash: rx },
         { walletAddress: { $in: matchedUsers.map((u) => u.walletAddress) } },
       ];
-      if (/^#?\d+$/.test(search)) or.push({ lineNumber: Number(search.replace('#', '')) });
+      if (/^#?\d+$/.test(search)) {
+        // "#3" means the 3rd position in line now, i.e. the 3rd ticket still in the queue.
+        const ticket = (await loadQueue())[Number(search.replace('#', '')) - 1];
+        if (ticket !== undefined) or.push({ lineNumber: ticket, status: { $in: COUNTED_STATUSES } });
+      }
       filter.$or = or;
     }
 
-    // sort=line is the queue view: #1 first. Deposits without a line number (REVIEW) aren't in
-    // the queue, and would otherwise sort first, so they are left out of this view.
+    // sort=line is the queue view: position #1 first. Only deposits still in line are shown;
+    // withdrawn and REVIEW deposits have no position (unless a specific status is chosen).
     const queue = String(query.sort ?? '') === 'line';
-    if (queue) filter.lineNumber = { $type: 'number' };
+    if (queue) {
+      filter.lineNumber = { $type: 'number' };
+      if (!filter.status) filter.status = { $in: COUNTED_STATUSES };
+    }
 
     const [rows, total] = await Promise.all([
       PriorityLineDeposit.find(filter)
@@ -499,9 +543,12 @@ export class PriorityLineService {
     const total: number = result?.total?.[0]?.n ?? 0;
 
     const wallets = rows.map((r) => r._id as string);
-    const users = await User.find({ walletAddress: { $in: wallets } })
-      .select('walletAddress username tier')
-      .lean();
+    const [users, queue] = await Promise.all([
+      User.find({ walletAddress: { $in: wallets } })
+        .select('walletAddress username tier')
+        .lean(),
+      loadQueue(),
+    ]);
     const byWallet = new Map(users.map((u) => [u.walletAddress, u]));
 
     const items = rows.map((r) => {
@@ -521,7 +568,8 @@ export class PriorityLineService {
         reviewUsd: roundUsd(r.reviewUsd),
         deposits: r.deposits as number,
         activeDeposits: r.activeDeposits as number,
-        firstLineNumber: (r.firstLineNumber as number | null) ?? null,
+        // The aggregate holds the member's lowest ticket; show it as a live position.
+        firstLineNumber: positionOfTicket(queue, r.firstLineNumber as number | null),
         lastDepositAt: r.lastDepositAt as Date,
       };
     });
@@ -574,14 +622,15 @@ export class PriorityLineService {
       throw new PriorityLineError('NOT_PENDING', 'This withdrawal is not pending (already processed or not requested)', 409);
     }
 
-    logger.info(`Priority Line withdrawal completed: line #${doc.lineNumber} (${doc.walletAddress}) by ${adminUsername}`);
+    // The deposit has left the line, so there is no position to quote; those behind it move up.
+    logger.info(`Priority Line withdrawal completed: ticket ${doc.lineNumber} (${doc.walletAddress}) by ${adminUsername}`);
     await NotificationService.createQuiet({
       walletAddress: doc.walletAddress,
       type: 'PRIORITY_LINE_WITHDRAWN',
-      title: `Withdrawal completed — line #${doc.lineNumber}`,
+      title: 'Withdrawal completed',
       sub: `${fmtUsd(doc.amountUsd)} ${doc.token} has been sent back to you`,
       link: '/priority-line',
-      meta: { lineNumber: doc.lineNumber, amountUsd: doc.amountUsd, token: doc.token, payoutTxHash },
+      meta: { amountUsd: doc.amountUsd, token: doc.token, payoutTxHash },
       dedupeKey: `PRIORITY_LINE_WITHDRAWN:${doc.id}`,
     });
     return (await PriorityLineService.withUsernames([doc.toObject()]))[0];
@@ -602,14 +651,15 @@ export class PriorityLineService {
     if (!doc) {
       throw new PriorityLineError('NOT_PENDING', 'This withdrawal is not pending (already processed or not requested)', 409);
     }
-    logger.info(`Priority Line withdrawal rejected: line #${doc.lineNumber} (${doc.walletAddress}) by ${adminUsername}`);
+    const position = positionOfTicket(await loadQueue(), doc.lineNumber);
+    logger.info(`Priority Line withdrawal rejected: position #${position} (ticket ${doc.lineNumber}, ${doc.walletAddress}) by ${adminUsername}`);
     await NotificationService.createQuiet({
       walletAddress: doc.walletAddress,
       type: 'GENERAL',
-      title: `Withdrawal request declined — line #${doc.lineNumber}`,
+      title: `Withdrawal request declined — line #${position}`,
       sub: note || 'Your deposit remains in the Priority Line.',
       link: '/priority-line',
-      meta: { lineNumber: doc.lineNumber },
+      meta: { lineNumber: position },
     });
     return (await PriorityLineService.withUsernames([doc.toObject()]))[0];
   }

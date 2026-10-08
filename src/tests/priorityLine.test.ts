@@ -273,6 +273,59 @@ describe('withdrawals', () => {
   });
 });
 
+describe('line positions move up when someone withdraws', () => {
+  async function deposit(wallet: string, usd: number, n: number) {
+    mine([transferLog({ usd, from: wallet })]);
+    return (await PriorityLineService.confirmDeposit(wallet, hash(n), 'USDT')).deposits[0];
+  }
+  async function withdraw(wallet: string, id: string) {
+    await PriorityLineService.requestWithdrawal(wallet, id);
+    await PriorityLineService.completeWithdrawal(id, 'admin', {});
+  }
+
+  it('a withdrawn first deposit frees #1: the next deposit joins at #1, not #2', async () => {
+    const a = await deposit(USER, 1400, 1);
+    expect(a.lineNumber).toBe(1);
+    await withdraw(USER, a.id);
+
+    const o = await PriorityLineService.getOverview(USER);
+    expect(o.firstLineNumber).toBeNull();
+    expect(o.deposits[0].lineNumber).toBeNull(); // withdrawn rows have no position
+
+    const b = await deposit(USER, 100, 2);
+    expect(b.lineNumber).toBe(1);
+    expect((await PriorityLineService.getOverview(USER)).firstLineNumber).toBe(1);
+  });
+
+  it('everyone behind a withdrawn deposit moves up one place', async () => {
+    const a = await deposit(USER, 100, 1);
+    const b = await deposit(OTHER, 100, 2);
+    const c = await deposit(USER, 100, 3);
+    expect([a.lineNumber, b.lineNumber, c.lineNumber]).toEqual([1, 2, 3]);
+
+    await withdraw(USER, a.id);
+
+    const other = await PriorityLineService.getOverview(OTHER);
+    expect(other.firstLineNumber).toBe(1);
+    const mine2 = await PriorityLineService.getOverview(USER);
+    expect(mine2.deposits.find((d) => d.id === c.id)?.lineNumber).toBe(2);
+    expect(mine2.firstLineNumber).toBe(2);
+
+    const d = await deposit(OTHER, 100, 4);
+    expect(d.lineNumber).toBe(3);
+  });
+
+  it('a pending withdrawal keeps its place until the admin pays', async () => {
+    const a = await deposit(USER, 100, 1);
+    const b = await deposit(OTHER, 100, 2);
+    await PriorityLineService.requestWithdrawal(USER, a.id);
+    expect((await PriorityLineService.getOverview(USER)).deposits[0].lineNumber).toBe(1);
+    expect((await PriorityLineService.getOverview(OTHER)).firstLineNumber).toBe(2);
+    await PriorityLineService.completeWithdrawal(a.id, 'admin', {});
+    expect((await PriorityLineService.getOverview(OTHER)).firstLineNumber).toBe(1);
+  });
+});
+
 describe('admin deposit list ordering', () => {
   it('defaults to newest first', async () => {
     await PriorityLineService.listDeposits({});
