@@ -12,6 +12,9 @@ export type NotificationType =
   | 'VOUCHER_RECEIVED'
   | 'VOUCHER_REDEEMED'
   | 'VOUCHER_CLAIMED_BY_OTHER'
+  | 'PRIORITY_LINE_DEPOSIT'
+  | 'PRIORITY_LINE_WITHDRAWAL_REQUESTED'
+  | 'PRIORITY_LINE_WITHDRAWN'
   | 'GENERAL';
 
 export interface INotification extends Document {
@@ -53,6 +56,9 @@ const NotificationSchema: Schema = new Schema({
       'VOUCHER_RECEIVED',
       'VOUCHER_REDEEMED',
       'VOUCHER_CLAIMED_BY_OTHER',
+      'PRIORITY_LINE_DEPOSIT',
+      'PRIORITY_LINE_WITHDRAWAL_REQUESTED',
+      'PRIORITY_LINE_WITHDRAWN',
       'GENERAL',
     ],
     required: true,
