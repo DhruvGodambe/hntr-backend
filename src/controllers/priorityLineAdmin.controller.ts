@@ -56,6 +56,14 @@ export class PriorityLineAdminController {
     }
   }
 
+  static async listMembers(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      sendSuccess(res, await PriorityLineService.listMembers(req.query), 'OK');
+    } catch (error) {
+      handle(res, error, next);
+    }
+  }
+
   static async listWithdrawals(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       sendSuccess(res, await PriorityLineService.listWithdrawals(req.query), 'OK');

@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   receipt: null as any,
   seq: 0,
   notifications: [] as any[],
+  lastFind: null as null | { q: any; sort: any },
 }));
 
 function matches(row: any, filter: Record<string, any>): boolean {
@@ -42,7 +43,10 @@ vi.mock('../models/PriorityLineDeposit', () => ({
       let rows = state.deposits.filter((r) => matches(r, q));
       const chain: any = {
         select: () => chain,
-        sort: () => chain,
+        sort: (spec: any) => {
+          state.lastFind = { q, sort: spec };
+          return chain;
+        },
         skip: () => chain,
         limit: () => chain,
         lean: async () => rows.map((r) => ({ ...r })),
@@ -266,6 +270,19 @@ describe('withdrawals', () => {
     const r = await PriorityLineService.rejectWithdrawal(d.id, 'a', 'not eligible');
     expect(r.status).toBe('ACTIVE');
     expect((await PriorityLineService.getOverview(USER)).firstLineNumber).toBe(1);
+  });
+});
+
+describe('admin deposit list ordering', () => {
+  it('defaults to newest first', async () => {
+    await PriorityLineService.listDeposits({});
+    expect(state.lastFind?.sort).toEqual({ createdAt: -1 });
+  });
+
+  it('queue view sorts by line number and leaves out deposits with no line number', async () => {
+    await PriorityLineService.listDeposits({ sort: 'line' });
+    expect(state.lastFind?.sort).toEqual({ lineNumber: 1 });
+    expect(state.lastFind?.q.lineNumber).toEqual({ $type: 'number' });
   });
 });
 
