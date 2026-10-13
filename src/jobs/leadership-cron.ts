@@ -8,6 +8,7 @@ import Payout from '../models/Payout';
 import User from '../models/User';
 import { leadershipEligibleFilter } from '../constants';
 import { initVoucherCron } from './voucher-cron';
+import { initPriorityLineCron } from './priority-line-cron';
 
 const CRON_TZ = { timezone: 'UTC' as const };
 
@@ -119,6 +120,7 @@ export function initCronJobs() {
 
   // Voucher expiry + refund, stale-lock sweep, burner gas alert (every 15 min).
   initVoucherCron(CRON_TZ);
+  initPriorityLineCron(CRON_TZ);
 
   // DISABLED: admin-triggered two-hop dispersal replaces auto-pay
   // Primary monthly leadership pool: 1st of every month at 00:00 UTC.
