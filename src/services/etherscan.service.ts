@@ -64,8 +64,10 @@ function throttledFetch(url: string): Promise<Response> {
   return runNext.then(() => fetch(url));
 }
 
-function isRateLimitMessage(message: unknown): boolean {
-  return typeof message === 'string' && message.toLowerCase().includes('rate limit');
+// Etherscan reports throttling as { status: "0", message: "NOTOK", result: "Max calls per sec rate limit reached" },
+// so the text has to be checked in `result` as well as `message`.
+function isRateLimited(json: any): boolean {
+  return [json?.message, json?.result].some((m) => typeof m === 'string' && m.toLowerCase().includes('rate limit'));
 }
 
 export interface GetLogsParams {
@@ -129,7 +131,7 @@ export async function getLogsViaEtherscan({ address, topics, fromBlock, toBlock 
         return results;
       }
 
-      if (isRateLimitMessage(json.message) && attempt < MAX_RATE_LIMIT_RETRIES) {
+      if (isRateLimited(json) && attempt < MAX_RATE_LIMIT_RETRIES) {
         attempt += 1;
         await new Promise((resolve) => setTimeout(resolve, MIN_REQUEST_GAP_MS * attempt));
         continue;
@@ -160,6 +162,86 @@ export async function getLogsViaEtherscan({ address, topics, fromBlock, toBlock 
     }
 
     if (rawLogs.length < 1000) break; // last page
+  }
+
+  return results;
+}
+
+export interface EtherscanTokenTransfer {
+  hash: string;
+  blockNumber: number;
+  timeStamp: number;
+  from: string;
+  to: string;
+  contractAddress: string;
+  value: string;
+  confirmations: number;
+}
+
+/**
+ * All ERC20 transfers of `contractAddress` touching `address` from `fromBlock` onward, oldest
+ * first. Unlike getLogsViaEtherscan this throws on any API failure instead of returning a partial
+ * list, because the Priority Line reconciler advances a cursor from what it is given.
+ */
+export async function getTokenTransfersViaEtherscan(params: {
+  address: string;
+  contractAddress: string;
+  fromBlock: number;
+}): Promise<EtherscanTokenTransfer[]> {
+  if (!ENV.ETHERSCAN_API_KEY) throw new Error('ETHERSCAN_API_KEY is not set');
+
+  const PAGE_SIZE = 1000;
+  const results: EtherscanTokenTransfer[] = [];
+  let fromBlock = params.fromBlock;
+
+  // Etherscan caps page * offset at 10k, so page forward by block instead of by page number.
+  for (;;) {
+    const query = new URLSearchParams({
+      chainid: String(ENV.ETHERSCAN_CHAIN_ID),
+      module: 'account',
+      action: 'tokentx',
+      contractaddress: params.contractAddress,
+      address: params.address,
+      startblock: String(fromBlock),
+      endblock: '99999999',
+      page: '1',
+      offset: String(PAGE_SIZE),
+      sort: 'asc',
+      apikey: ENV.ETHERSCAN_API_KEY,
+    });
+
+    let json: any;
+    for (let attempt = 0; ; attempt++) {
+      json = await (await throttledFetch(`${ETHERSCAN_BASE_URL}?${query.toString()}`)).json();
+      if (!isRateLimited(json) || attempt >= 3) break;
+      await new Promise((resolve) => setTimeout(resolve, MIN_REQUEST_GAP_MS * (attempt + 1)));
+    }
+
+    if (json.status !== '1') {
+      if (json.message === 'No transactions found') break;
+      throw new Error(`Etherscan tokentx failed: ${json.message} ${typeof json.result === 'string' ? json.result : ''}`);
+    }
+
+    const rows: any[] = Array.isArray(json.result) ? json.result : [];
+    for (const r of rows) {
+      results.push({
+        hash: String(r.hash).toLowerCase(),
+        blockNumber: toNumber(r.blockNumber),
+        timeStamp: toNumber(r.timeStamp),
+        from: String(r.from).toLowerCase(),
+        to: String(r.to).toLowerCase(),
+        contractAddress: String(r.contractAddress).toLowerCase(),
+        value: String(r.value),
+        confirmations: toNumber(r.confirmations),
+      });
+    }
+    if (rows.length < PAGE_SIZE) break;
+
+    // Restart at the last block seen; rows from that block repeat, so drop them first.
+    const lastBlock = results[results.length - 1].blockNumber;
+    if (lastBlock === fromBlock) throw new Error(`More than ${PAGE_SIZE} transfers in block ${lastBlock}`);
+    while (results.length && results[results.length - 1].blockNumber === lastBlock) results.pop();
+    fromBlock = lastBlock;
   }
 
   return results;

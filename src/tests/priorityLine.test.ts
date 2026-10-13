@@ -14,6 +14,7 @@ const state = vi.hoisted(() => ({
   settings: null as any,
   counter: 0,
   receipt: null as any,
+  blockTime: 1_700_000_100, // seconds; later than every pre-seeded createdAt unless a test says otherwise
   seq: 0,
   notifications: [] as any[],
   lastFind: null as null | { q: any; sort: any },
@@ -26,7 +27,9 @@ function matches(row: any, filter: Record<string, any>): boolean {
     if (v && typeof v === 'object' && !(v instanceof Date) && !(v instanceof RegExp)) {
       if ('$in' in v) return v.$in.includes(actual);
       if ('$exists' in v) return (actual !== undefined) === v.$exists;
-      if ('$type' in v) return true;
+      if ('$type' in v) return v.$type === 'number' ? typeof actual === 'number' : true;
+      if ('$gt' in v) return actual !== undefined && actual > v.$gt;
+      if ('$lt' in v) return actual !== undefined && actual < v.$lt;
     }
     return actual === v;
   });
@@ -45,10 +48,15 @@ vi.mock('../models/PriorityLineDeposit', () => ({
         select: () => chain,
         sort: (spec: any) => {
           state.lastFind = { q, sort: spec };
+          const [[key, dir]] = Object.entries(spec) as [string, number][];
+          rows = [...rows].sort((a, b) => (a[key] > b[key] ? dir : a[key] < b[key] ? -dir : 0));
           return chain;
         },
         skip: () => chain,
-        limit: () => chain,
+        limit: (n: number) => {
+          rows = rows.slice(0, n);
+          return chain;
+        },
         lean: async () => rows.map((r) => ({ ...r })),
       };
       return chain;
@@ -114,7 +122,10 @@ vi.mock('../services/notification.service', () => ({
 }));
 
 vi.mock('../services/contract.service', () => ({
-  provider: { getTransactionReceipt: async () => state.receipt },
+  provider: {
+    getTransactionReceipt: async () => state.receipt,
+    getBlock: async () => ({ timestamp: state.blockTime }),
+  },
   hntrContract: { usdt: async () => USDT, usdc: async () => USDC },
   getContractAmountDecimals: async () => 6,
 }));
@@ -136,7 +147,7 @@ function transferLog(opts: { token?: string; from?: string; to?: string; usd: nu
 }
 
 function mine(logs: any[], status = 1) {
-  state.receipt = { status, logs };
+  state.receipt = { status, logs, blockNumber: 1 };
 }
 
 beforeEach(() => {
@@ -145,6 +156,7 @@ beforeEach(() => {
   state.settings = { priorityLineDepositWallet: DEPOSIT_WALLET, priorityLineWalletHistory: [] };
   state.counter = 0;
   state.receipt = null;
+  state.blockTime = 1_700_000_100;
   state.seq = 0;
   state.notifications = [];
 });
@@ -323,6 +335,55 @@ describe('line positions move up when someone withdraws', () => {
     expect((await PriorityLineService.getOverview(OTHER)).firstLineNumber).toBe(2);
     await PriorityLineService.completeWithdrawal(a.id, 'admin', {});
     expect((await PriorityLineService.getOverview(OTHER)).firstLineNumber).toBe(1);
+  });
+});
+
+describe('a deposit recorded late takes its place by on-chain time', () => {
+  async function depositAt(wallet: string, usd: number, n: number, sentAt: number) {
+    state.blockTime = sentAt;
+    mine([transferLog({ usd, from: wallet })]);
+    return (await PriorityLineService.confirmDeposit(wallet, hash(n), 'USDT')).deposits[0];
+  }
+  const ticketOf = (txHashValue: string) => state.deposits.find((d) => d.txHash === txHashValue).lineNumber;
+
+  it('slots between the deposits sent before and after it, without renumbering anyone', async () => {
+    await depositAt(OTHER, 100, 1, 1000);
+    await depositAt(OTHER, 100, 2, 3000);
+    await depositAt(OTHER, 100, 3, 4000);
+    const late = await depositAt(USER, 100, 9, 2000); // sent second, recorded last
+
+    expect(late.lineNumber).toBe(2);
+    expect([1, 2, 3].map((n) => ticketOf(hash(n)))).toEqual([1, 2, 3]);
+    const others = (await PriorityLineService.getOverview(OTHER)).deposits.map((d) => d.lineNumber).sort();
+    expect(others).toEqual([1, 3, 4]);
+  });
+
+  it('several late deposits keep their relative order', async () => {
+    await depositAt(OTHER, 100, 1, 1000);
+    await depositAt(OTHER, 100, 2, 5000);
+    await depositAt(USER, 100, 10, 2000);
+    await depositAt(USER, 100, 11, 3000);
+    const positions = (await PriorityLineService.getOverview(USER)).deposits.map((d) => d.lineNumber).sort();
+    expect(positions).toEqual([2, 3]);
+    expect((await PriorityLineService.getOverview(OTHER)).deposits.map((d) => d.lineNumber).sort()).toEqual([1, 4]);
+  });
+
+  it('can land at the very front, and falls back to createdAt for rows without a chain time', async () => {
+    const legacy = await depositAt(OTHER, 100, 1, 5000);
+    delete state.deposits.find((d) => d.txHash === hash(1)).txTimestamp; // pre-migration row
+    expect(legacy.lineNumber).toBe(1);
+
+    // createdAt of the legacy row is ~1_700_000_000 s; this transfer was sent before that.
+    const early = await depositAt(USER, 100, 2, 1_600_000_000);
+    expect(early.lineNumber).toBe(1);
+    expect((await PriorityLineService.getOverview(OTHER)).deposits[0].lineNumber).toBe(2);
+  });
+
+  it('a deposit sent after everyone still goes to the back with a whole ticket', async () => {
+    await depositAt(OTHER, 100, 1, 1000);
+    const b = await depositAt(USER, 100, 2, 2000);
+    expect(b.lineNumber).toBe(2);
+    expect(ticketOf(hash(2))).toBe(2);
   });
 });
 

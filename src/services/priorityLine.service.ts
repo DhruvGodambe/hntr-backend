@@ -126,6 +126,46 @@ async function nextLineNumber(): Promise<number> {
   return c.seq;
 }
 
+/**
+ * Ticket for a transfer mined at `txTime`. Usually the next counter value (back of the line), but
+ * a deposit recorded late (lost browser confirm, picked up by the reconciler) goes just ahead of
+ * the first deposit that was sent after it. That slot gets a fractional ticket halfway between its
+ * neighbours, so no other ticket is rewritten and concurrent writers can't corrupt the order.
+ */
+async function ticketFor(txTime: Date): Promise<number> {
+  const sentLater: Record<string, any> = {
+    lineNumber: { $type: 'number' },
+    $or: [{ txTimestamp: { $gt: txTime } }, { txTimestamp: { $exists: false }, createdAt: { $gt: txTime } }],
+  };
+  const [later] = await PriorityLineDeposit.find(sentLater)
+    .sort({ lineNumber: 1 })
+    .limit(1)
+    .select('lineNumber')
+    .lean();
+  if (!later) return nextLineNumber();
+
+  const next = later.lineNumber as number;
+  const [before] = await PriorityLineDeposit.find({ lineNumber: { $lt: next } })
+    .sort({ lineNumber: -1 })
+    .limit(1)
+    .select('lineNumber')
+    .lean();
+  const prev = (before?.lineNumber as number | undefined) ?? 0;
+  const mid = (prev + next) / 2;
+  // Out of float precision between two tickets: fall back to the back of the line.
+  return mid > prev && mid < next ? mid : nextLineNumber();
+}
+
+async function blockTime(blockNumber: number): Promise<Date> {
+  try {
+    const block = await provider.getBlock(blockNumber);
+    if (block) return new Date(block.timestamp * 1000);
+  } catch (err: any) {
+    logger.warn(`Priority Line: could not read block ${blockNumber} time: ${err?.message || err}`);
+  }
+  return new Date();
+}
+
 export class PriorityLineService {
   // ── member ───────────────────────────────────────────────────────────────
   static async getOverview(walletAddress: string) {
@@ -247,7 +287,7 @@ export class PriorityLineService {
       );
     }
 
-    const decimals = await getContractAmountDecimals();
+    const [decimals, txTimestamp] = await Promise.all([getContractAmountDecimals(), blockTime(receipt.blockNumber)]);
 
     return withWalletLock(wallet, async () => {
       const results: IPriorityLineDeposit[] = [];
@@ -278,24 +318,30 @@ export class PriorityLineService {
           txHash,
           logIndex: m.logIndex,
           depositWallet: m.to,
+          txTimestamp,
         };
 
-        let doc: IPriorityLineDeposit;
-        try {
-          doc = fits
-            ? await PriorityLineDeposit.create({ ...base, status: 'ACTIVE', lineNumber: await nextLineNumber() })
-            : await PriorityLineDeposit.create({ ...base, status: 'REVIEW' });
-        } catch (err: any) {
-          if (err?.code === 11000) {
+        let doc: IPriorityLineDeposit | null = null;
+        let alreadyCredited: IPriorityLineDeposit | null = null;
+        for (let attempt = 1; !doc && !alreadyCredited; attempt++) {
+          try {
+            doc = fits
+              ? await PriorityLineDeposit.create({ ...base, status: 'ACTIVE', lineNumber: await ticketFor(txTimestamp) })
+              : await PriorityLineDeposit.create({ ...base, status: 'REVIEW' });
+          } catch (err: any) {
+            if (err?.code !== 11000) throw err;
             const dup = await PriorityLineDeposit.findOne({ txHash, logIndex: m.logIndex });
-            if (dup && dup.walletAddress === wallet) {
-              results.push(dup);
-              continue;
-            }
-            throw new PriorityLineError('TX_ALREADY_USED', 'That transaction was already credited', 409);
+            if (dup && dup.walletAddress === wallet) alreadyCredited = dup;
+            else if (dup) throw new PriorityLineError('TX_ALREADY_USED', 'That transaction was already credited', 409);
+            // Otherwise another writer took the same line ticket at the same moment: pick again.
+            else if (attempt >= 3) throw err;
           }
-          throw err;
         }
+        if (alreadyCredited) {
+          results.push(alreadyCredited);
+          continue;
+        }
+        if (!doc) continue;
 
         if (fits) {
           const position = positionOfTicket(await loadQueue(), doc.lineNumber);

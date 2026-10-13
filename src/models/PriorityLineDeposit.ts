@@ -4,13 +4,19 @@ export type PriorityLineStatus = 'ACTIVE' | 'WITHDRAWAL_REQUESTED' | 'WITHDRAWN'
 
 export interface IPriorityLineDeposit extends Document {
   walletAddress: string;
-  /** Sequential position in the line. Unset for REVIEW deposits. Never reused. */
+  /**
+   * Ordering ticket in the line (live position = rank among in-line tickets). Unset for REVIEW
+   * deposits. Never reused. Normally a counter value; a deposit recorded late is slotted by its
+   * on-chain time with a fractional ticket between its neighbours, so nobody else's ticket moves.
+   */
   lineNumber?: number;
   token: 'USDT' | 'USDC';
   amountUsd: number;
   amountRaw: string;
   txHash: string;
   logIndex: number;
+  /** Block time of the transfer; orders the line. Older rows may lack it (createdAt is the fallback). */
+  txTimestamp?: Date;
   /** Deposit wallet the funds were sent to. */
   depositWallet: string;
   status: PriorityLineStatus;
@@ -32,6 +38,7 @@ const PriorityLineDepositSchema: Schema = new Schema(
     amountRaw: { type: String, required: true },
     txHash: { type: String, required: true, lowercase: true },
     logIndex: { type: Number, required: true },
+    txTimestamp: { type: Date },
     depositWallet: { type: String, required: true, lowercase: true },
     status: {
       type: String,
