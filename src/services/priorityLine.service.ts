@@ -8,6 +8,7 @@ import { getContractAmountDecimals, hntrContract, provider } from './contract.se
 import { PRIORITY_LINE_MIN_DEPOSIT_USD, PRIORITY_LINE_TIER_CAPS, Tier } from '../constants';
 import { parsePagination, paginatedResponse, sanitizeSearch } from '../utils/pagination';
 import { logger } from '../utils/logger';
+import { withDbLock } from '../utils/dbLock';
 
 export type PriorityToken = 'USDT' | 'USDC';
 
@@ -22,6 +23,7 @@ export class PriorityLineError extends Error {
 }
 
 const COUNTER_KEY = 'priorityLine';
+const LINE_LOCK_KEY = 'priorityLineTickets';
 const COUNTED_STATUSES: PriorityLineStatus[] = ['ACTIVE', 'WITHDRAWAL_REQUESTED'];
 const EPS = 1e-9;
 const TRANSFER_IFACE = new ethers.Interface([
@@ -127,33 +129,53 @@ async function nextLineNumber(): Promise<number> {
 }
 
 /**
- * Ticket for a transfer mined at `txTime`. Usually the next counter value (back of the line), but
- * a deposit recorded late (lost browser confirm, picked up by the reconciler) goes just ahead of
- * the first deposit that was sent after it. That slot gets a fractional ticket halfway between its
- * neighbours, so no other ticket is rewritten and concurrent writers can't corrupt the order.
+ * Creates an in-line deposit with a whole-number ticket ordered by on-chain send time.
+ *
+ * Usually that is the next counter value (back of the line). A deposit recorded late (lost
+ * browser confirm, picked up by the reconciler) instead takes the ticket of the first deposit
+ * sent after it, and that ticket and every later one move up by one. All ticket assignment runs
+ * under a DB lock so a shift can never interleave with another process handing out tickets.
  */
-async function ticketFor(txTime: Date): Promise<number> {
-  const sentLater: Record<string, any> = {
-    lineNumber: { $type: 'number' },
-    $or: [{ txTimestamp: { $gt: txTime } }, { txTimestamp: { $exists: false }, createdAt: { $gt: txTime } }],
-  };
-  const [later] = await PriorityLineDeposit.find(sentLater)
-    .sort({ lineNumber: 1 })
-    .limit(1)
-    .select('lineNumber')
-    .lean();
-  if (!later) return nextLineNumber();
+async function createInLine(
+  txTime: Date,
+  create: (lineNumber: number) => Promise<IPriorityLineDeposit>,
+): Promise<IPriorityLineDeposit> {
+  return withDbLock(LINE_LOCK_KEY, async () => {
+    const sentLater: Record<string, any> = {
+      lineNumber: { $type: 'number' },
+      $or: [{ txTimestamp: { $gt: txTime } }, { txTimestamp: { $exists: false }, createdAt: { $gt: txTime } }],
+    };
+    const [later] = await PriorityLineDeposit.find(sentLater)
+      .sort({ lineNumber: 1 })
+      .limit(1)
+      .select('lineNumber')
+      .lean();
+    if (!later) return create(await nextLineNumber());
 
-  const next = later.lineNumber as number;
-  const [before] = await PriorityLineDeposit.find({ lineNumber: { $lt: next } })
-    .sort({ lineNumber: -1 })
-    .limit(1)
-    .select('lineNumber')
-    .lean();
-  const prev = (before?.lineNumber as number | undefined) ?? 0;
-  const mid = (prev + next) / 2;
-  // Out of float precision between two tickets: fall back to the back of the line.
-  return mid > prev && mid < next ? mid : nextLineNumber();
+    const slot = later.lineNumber as number;
+    const toShift = await PriorityLineDeposit.find({ lineNumber: { $gte: slot } })
+      .sort({ lineNumber: -1 })
+      .select('_id lineNumber')
+      .lean();
+    // Keep the counter at the highest ticket so later appends never collide with a shifted row.
+    await Counter.findOneAndUpdate(
+      { key: COUNTER_KEY },
+      { $max: { seq: (toShift[0].lineNumber as number) + 1 } },
+      { upsert: true },
+    );
+    // Highest first and ordered, so each move lands on a ticket that is already free.
+    await PriorityLineDeposit.bulkWrite(
+      toShift.map((r) => ({
+        updateOne: {
+          filter: { _id: r._id, lineNumber: r.lineNumber },
+          update: { $set: { lineNumber: (r.lineNumber as number) + 1 } },
+        },
+      })),
+      { ordered: true },
+    );
+    logger.info(`Priority Line: late deposit takes ticket ${slot}; ${toShift.length} later tickets moved up by one`);
+    return create(slot);
+  });
 }
 
 async function blockTime(blockNumber: number): Promise<Date> {
@@ -326,14 +348,16 @@ export class PriorityLineService {
         for (let attempt = 1; !doc && !alreadyCredited; attempt++) {
           try {
             doc = fits
-              ? await PriorityLineDeposit.create({ ...base, status: 'ACTIVE', lineNumber: await ticketFor(txTimestamp) })
+              ? await createInLine(txTimestamp, (lineNumber) =>
+                  PriorityLineDeposit.create({ ...base, status: 'ACTIVE', lineNumber }),
+                )
               : await PriorityLineDeposit.create({ ...base, status: 'REVIEW' });
           } catch (err: any) {
             if (err?.code !== 11000) throw err;
             const dup = await PriorityLineDeposit.findOne({ txHash, logIndex: m.logIndex });
             if (dup && dup.walletAddress === wallet) alreadyCredited = dup;
             else if (dup) throw new PriorityLineError('TX_ALREADY_USED', 'That transaction was already credited', 409);
-            // Otherwise another writer took the same line ticket at the same moment: pick again.
+            // Otherwise a line-ticket collision (e.g. an older server build without the lock): pick again.
             else if (attempt >= 3) throw err;
           }
         }

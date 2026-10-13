@@ -6,8 +6,8 @@ export interface IPriorityLineDeposit extends Document {
   walletAddress: string;
   /**
    * Ordering ticket in the line (live position = rank among in-line tickets). Unset for REVIEW
-   * deposits. Never reused. Normally a counter value; a deposit recorded late is slotted by its
-   * on-chain time with a fractional ticket between its neighbours, so nobody else's ticket moves.
+   * deposits. Always a whole number. Normally the next counter value; a deposit recorded late takes
+   * the ticket of the first deposit sent after it, and that ticket and all later ones move up by one.
    */
   lineNumber?: number;
   token: 'USDT' | 'USDC';
