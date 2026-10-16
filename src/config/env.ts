@@ -30,6 +30,13 @@ function readEnv(name: string, fallback = ''): string {
     .replace(/^["']|["']$/g, '');
 }
 
+/** Parses Cloudinary's `cloudinary://<key>:<secret>@<cloud>` URL from CLOUDINARY_URL or a mis-pasted CLOUDINARY_CLOUD_NAME. */
+function cloudinaryUrl(): { key: string; secret: string; cloud: string } | null {
+  const raw = [readEnv('CLOUDINARY_URL'), readEnv('CLOUDINARY_CLOUD_NAME')].find((v) => v.includes('cloudinary://'));
+  const m = raw ? /cloudinary:\/\/([^:]+):([^@]+)@([\w-]+)/.exec(raw) : null;
+  return m ? { key: m[1], secret: m[2], cloud: m[3] } : null;
+}
+
 export const ENV = {
   PORT: readEnv('PORT') || 8000,
   NODE_ENV: readEnv('NODE_ENV', 'development'),
@@ -105,9 +112,11 @@ export const ENV = {
   // Cloudinary storage for support-ticket screenshots (stored as private "authenticated"
   // assets, served through short-lived signed URLs). When any of the three is empty,
   // uploads answer 503 UPLOADS_NOT_CONFIGURED and the rest of support keeps working.
-  CLOUDINARY_CLOUD_NAME: readEnv('CLOUDINARY_CLOUD_NAME'),
-  CLOUDINARY_API_KEY: readEnv('CLOUDINARY_API_KEY'),
-  CLOUDINARY_API_SECRET: readEnv('CLOUDINARY_API_SECRET'),
+  // A pasted `cloudinary://<key>:<secret>@<cloud>` URL (CLOUDINARY_URL, or by mistake in
+  // CLOUDINARY_CLOUD_NAME) is split into the three parts.
+  CLOUDINARY_CLOUD_NAME: cloudinaryUrl()?.cloud || readEnv('CLOUDINARY_CLOUD_NAME'),
+  CLOUDINARY_API_KEY: readEnv('CLOUDINARY_API_KEY') || cloudinaryUrl()?.key || '',
+  CLOUDINARY_API_SECRET: readEnv('CLOUDINARY_API_SECRET') || cloudinaryUrl()?.secret || '',
   CLOUDINARY_FOLDER: readEnv('CLOUDINARY_FOLDER', 'hntr/support'),
 
   // Gift-code crypto + redeem links. REQUIRED for issue/reveal/redeem URL building.

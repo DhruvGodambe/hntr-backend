@@ -35,6 +35,26 @@ function client() {
   return cloudinary;
 }
 
+/**
+ * Startup check: pings Cloudinary with the configured keys and logs the result.
+ * Never throws; a failure only disables screenshot uploads, not the server.
+ */
+export async function verifyCloudinary(): Promise<void> {
+  if (!isCloudinaryConfigured()) {
+    logger.warn('Cloudinary not configured (CLOUDINARY_* env vars missing) — support screenshot uploads are disabled');
+    return;
+  }
+  // Only ever log a plain cloud name, so a mis-pasted value can't leak the API secret into logs.
+  const cloud = /^[\w-]{1,64}$/.test(ENV.CLOUDINARY_CLOUD_NAME) ? ENV.CLOUDINARY_CLOUD_NAME : '(invalid cloud name)';
+  try {
+    await client().api.ping();
+    logger.info(`Cloudinary initialised successfully (cloud "${cloud}", folder "${ENV.CLOUDINARY_FOLDER}")`);
+  } catch (err: any) {
+    const reason = err?.error?.message || err?.message || String(err);
+    logger.error(`Cloudinary initialisation failed for cloud "${cloud}": ${reason} — uploads will fail until fixed`);
+  }
+}
+
 export async function uploadPrivateImage(buffer: Buffer, folder: string): Promise<StoredImage> {
   const res = await new Promise<UploadApiResponse>((resolve, reject) => {
     const stream = client().uploader.upload_stream(
