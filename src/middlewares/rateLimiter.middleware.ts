@@ -93,3 +93,8 @@ export const publicUserLookupRateLimit = rateLimit({ windowMs: 60 * 1000, max: 4
 export const voucherRedeemRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, keyPrefix: 'voucher-redeem' });
 export const voucherIssueRateLimit = rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix: 'voucher-issue' });
 export const voucherRevealRateLimit = rateLimit({ windowMs: 60 * 1000, max: 30, keyPrefix: 'voucher-reveal' });
+
+/** Opening support tickets — a real member opens a handful; blocks ticket spam. */
+export const supportTicketRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, keyPrefix: 'support-ticket' });
+/** Replies on a support ticket. */
+export const supportReplyRateLimit = rateLimit({ windowMs: 10 * 60 * 1000, max: 30, keyPrefix: 'support-reply' });

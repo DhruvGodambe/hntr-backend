@@ -40,12 +40,27 @@ vi.mock('../services/user.service', () => ({
 vi.mock('../controllers/user.controller', () => ({
   UserController: {
     validateSponsor: stubOk,
+    checkUsername: stubOk,
+    searchUsernames: stubOk,
     register: (_req: Request, res: Response) => {
       res.status(201).json({ success: true, data: { stubbed: true } });
     },
     getProfile: stubOk,
     getProfileByWallet: stubOk,
     updateFullName: stubOk,
+  },
+}));
+
+// Captcha is not under test here; sign-up must only stay free of the owner middleware.
+vi.mock('../middlewares/turnstile.middleware', () => ({
+  verifyTurnstile: (_req: Request, _res: Response, next: () => void) => next(),
+}));
+
+vi.mock('../controllers/support.controller', () => ({
+  SupportController: {
+    listTickets: stubOk,
+    createTicket: stubOk,
+    replyToTicket: stubOk,
   },
 }));
 
@@ -171,5 +186,25 @@ describe('VAPT IDOR / BOLA — owner-only user and network APIs', () => {
     const res = await request(app).get(`/api/auth/nonce`).query({ walletAddress: ids.walletA });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+
+  // Support tickets are scoped to the session wallet (no identity in the path), so the
+  // guarantee to pin is that every route needs a wallet session at all.
+  describe('support desk routes require a wallet session', () => {
+    const supportRoutes: { method: 'get' | 'post'; path: string }[] = [
+      { method: 'get', path: '/api/support/tickets' },
+      { method: 'post', path: '/api/support/tickets' },
+      { method: 'post', path: '/api/support/tickets/HNT-1001/messages' },
+    ];
+    for (const r of supportRoutes) {
+      it(`${r.method.toUpperCase()} ${r.path} returns 401 without Authorization`, async () => {
+        const res = await call(r.method, r.path);
+        expect(res.status).toBe(401);
+      });
+      it(`${r.method.toUpperCase()} ${r.path} returns 200 with a wallet session`, async () => {
+        const res = await call(r.method, r.path).set(authHeader(tokenA));
+        expect(res.status).toBe(200);
+      });
+    }
   });
 });
