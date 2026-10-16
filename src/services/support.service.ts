@@ -1,4 +1,5 @@
 import SupportTicket, {
+  ISupportAttachment,
   ISupportMessage,
   ISupportTicket,
   SupportTicketPriority,
@@ -7,6 +8,8 @@ import SupportTicket, {
 import Counter from '../models/Counter';
 import User from '../models/User';
 import { NotificationService } from './notification.service';
+import { deleteImage, isCloudinaryConfigured, signedUrl, uploadPrivateImage } from './cloudinary.service';
+import { ENV } from '../config/env';
 import { parsePagination, paginatedResponse, sanitizeSearch } from '../utils/pagination';
 import { logger } from '../utils/logger';
 
@@ -40,6 +43,9 @@ const SUBJECT_MAX = 90;
 const BODY_MAX = 5000;
 const STRATEGY_MAX = 100;
 const MAX_ATTACHMENTS = 10;
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+/** Signed screenshot URLs stay valid this long; clients refetch the ticket to refresh them. */
+const ATTACHMENT_URL_TTL_SEC = 10 * 60;
 /** Unresolved tickets one wallet may hold at once. */
 const MAX_OPEN_PER_WALLET = 10;
 /** Messages per ticket, so one thread can't grow without bound. */
@@ -52,6 +58,23 @@ export interface SupportMessageDto {
   createdAt: Date;
 }
 
+export interface SupportAttachmentDto {
+  /** Signed download URL, expires after ~10 minutes. Null if storage is not configured. */
+  url: string | null;
+  format: string;
+  bytes: number;
+  width: number;
+  height: number;
+  fromSupport: boolean;
+  uploadedAt: Date;
+}
+
+/** An uploaded file as handed over by the multipart middleware. */
+export interface UploadedFile {
+  buffer: Buffer;
+  size: number;
+}
+
 export interface SupportTicketDto {
   id: string;
   subject: string;
@@ -61,6 +84,7 @@ export interface SupportTicketDto {
   status: SupportTicketStatus;
   createdAt: Date;
   messages: SupportMessageDto[];
+  attachments: SupportAttachmentDto[];
 }
 
 type TicketRow = Pick<
@@ -74,6 +98,7 @@ type TicketRow = Pick<
   | 'subject'
   | 'status'
   | 'attachmentCount'
+  | 'attachments'
   | 'messages'
   | 'lastMessageAt'
   | 'resolvedAt'
@@ -98,6 +123,88 @@ function text(raw: unknown, field: string, max: number): string {
   return value;
 }
 
+/** Image type from the file's first bytes; the client's filename and mimetype are not trusted. */
+export function sniffImageFormat(buf: Buffer): 'png' | 'jpg' | 'gif' | 'webp' | null {
+  const ascii = (from: number, to: number) => buf.subarray(from, to).toString('latin1');
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf.length >= 6 && (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a')) return 'gif';
+  if (buf.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'webp';
+  return null;
+}
+
+function toAttachmentDto(a: ISupportAttachment): SupportAttachmentDto {
+  return {
+    url: isCloudinaryConfigured() ? signedUrl(a.publicId, a.format, ATTACHMENT_URL_TTL_SEC) : null,
+    format: a.format,
+    bytes: a.bytes,
+    width: a.width,
+    height: a.height,
+    fromSupport: a.fromSupport,
+    uploadedAt: a.uploadedAt,
+  };
+}
+
+function checkFiles(files: UploadedFile[] | undefined): UploadedFile[] {
+  const list = files ?? [];
+  if (!list.length) throw new SupportError('NO_FILES', 'Choose at least one screenshot');
+  if (list.length > MAX_ATTACHMENTS) {
+    throw new SupportError('TOO_MANY_FILES', `You can attach up to ${MAX_ATTACHMENTS} screenshots per ticket`);
+  }
+  for (const f of list) {
+    if (f.size > MAX_ATTACHMENT_BYTES) throw new SupportError('FILE_TOO_LARGE', 'Each screenshot must be 5 MB or smaller', 413);
+    if (!sniffImageFormat(f.buffer)) {
+      throw new SupportError('INVALID_FILE_TYPE', 'Screenshots must be PNG, JPEG, GIF or WebP images');
+    }
+  }
+  if (!isCloudinaryConfigured()) {
+    throw new SupportError('UPLOADS_NOT_CONFIGURED', 'Screenshot uploads are not available right now', 503);
+  }
+  return list;
+}
+
+/**
+ * Uploads the files, then appends them in one guarded update so a ticket never holds more than
+ * MAX_ATTACHMENTS, even with concurrent uploads. The files are deleted again if the update misses.
+ */
+async function storeAttachments(
+  ticketNumber: number,
+  filter: Record<string, unknown>,
+  files: UploadedFile[],
+  fromSupport: boolean,
+): Promise<TicketRow | null> {
+  const folder = `${ENV.CLOUDINARY_FOLDER}/${publicId(ticketNumber)}`;
+  const settled = await Promise.allSettled(files.map((f) => uploadPrivateImage(f.buffer, folder)));
+  const stored = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+  if (stored.length !== files.length) {
+    await Promise.all(stored.map((img) => deleteImage(img.publicId)));
+    const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    logger.error(`Support ${publicId(ticketNumber)}: screenshot upload failed: ${failed?.reason?.message || failed?.reason}`);
+    throw new SupportError('UPLOAD_FAILED', 'Could not upload the screenshots. Please try again.', 502);
+  }
+
+  const now = new Date();
+  const items: ISupportAttachment[] = stored.map((img) => ({ ...img, fromSupport, uploadedAt: now }));
+  const doc = await SupportTicket.findOneAndUpdate(
+    { ...filter, ticketNumber, [`attachments.${MAX_ATTACHMENTS - files.length}`]: { $exists: false } },
+    { $push: { attachments: { $each: items } } },
+    { new: true },
+  ).lean<TicketRow>();
+  if (!doc) await Promise.all(stored.map((img) => deleteImage(img.publicId)));
+  return doc;
+}
+
+function tooMany(ticket: TicketRow): never {
+  const left = Math.max(0, MAX_ATTACHMENTS - (ticket.attachments?.length ?? 0));
+  throw new SupportError(
+    'TOO_MANY_FILES',
+    left
+      ? `This ticket can take ${left} more screenshot${left === 1 ? '' : 's'}`
+      : `This ticket already has ${MAX_ATTACHMENTS} screenshots`,
+    409,
+  );
+}
+
 /** Member view: support replies stay anonymous ("HNTR Support"), admin names never leave the server. */
 function toDto(t: TicketRow): SupportTicketDto {
   return {
@@ -109,6 +216,7 @@ function toDto(t: TicketRow): SupportTicketDto {
     status: t.status,
     createdAt: t.createdAt,
     messages: (t.messages ?? []).map((m) => ({ fromSupport: m.fromSupport, body: m.body, createdAt: m.createdAt })),
+    attachments: (t.attachments ?? []).map(toAttachmentDto),
   };
 }
 
@@ -118,7 +226,7 @@ function toAdminDto(t: TicketRow) {
     ...toDto(t),
     walletAddress: t.walletAddress,
     username: t.username ?? null,
-    attachmentCount: t.attachmentCount ?? 0,
+    attachmentCount: Math.max(t.attachmentCount ?? 0, t.attachments?.length ?? 0),
     lastMessageAt: t.lastMessageAt,
     resolvedAt: t.resolvedAt ?? null,
     resolvedBy: t.resolvedBy ?? null,
@@ -216,7 +324,55 @@ export class SupportService {
     throw new SupportError('TICKET_FULL', 'This conversation is too long. Please open a new ticket.', 409);
   }
 
+  /** Adds screenshots to one of the member's own tickets. Resolved tickets are closed to uploads. */
+  static async addMemberAttachments(
+    walletAddress: string,
+    ticketId: string,
+    rawFiles: UploadedFile[] | undefined,
+  ): Promise<SupportTicketDto> {
+    const wallet = walletAddress.toLowerCase();
+    const ticketNumber = parseId(ticketId);
+    const files = checkFiles(rawFiles);
+    const resolved = () =>
+      new SupportError('TICKET_RESOLVED', 'This ticket is resolved. Open a new ticket if you still need help.', 409);
+
+    const existing = await SupportTicket.findOne({ ticketNumber, walletAddress: wallet }).lean<TicketRow>();
+    if (!existing) throw new SupportError('TICKET_NOT_FOUND', 'Ticket not found', 404);
+    if (existing.status === 'resolved') throw resolved();
+    if ((existing.attachments?.length ?? 0) + files.length > MAX_ATTACHMENTS) tooMany(existing);
+
+    const doc = await storeAttachments(
+      ticketNumber,
+      { walletAddress: wallet, status: { $in: ['open', 'pending'] } },
+      files,
+      false,
+    );
+    if (!doc) {
+      // Lost a race: resolved meanwhile, or another upload filled the slots.
+      const latest = await SupportTicket.findOne({ ticketNumber, walletAddress: wallet }).lean<TicketRow>();
+      if (latest?.status === 'resolved') throw resolved();
+      tooMany(latest ?? existing);
+    }
+    logger.info(`Support ticket ${publicId(ticketNumber)}: ${files.length} screenshot(s) added by ${wallet}`);
+    return toDto(doc);
+  }
+
   // ── admin ────────────────────────────────────────────────────────────────
+
+  /** Support attaches screenshots to a ticket (any status). */
+  static async adminAddAttachments(ticketId: string, adminUsername: string, rawFiles: UploadedFile[] | undefined) {
+    const ticketNumber = parseId(ticketId);
+    const files = checkFiles(rawFiles);
+
+    const existing = await SupportTicket.findOne({ ticketNumber }).lean<TicketRow>();
+    if (!existing) throw new SupportError('TICKET_NOT_FOUND', 'Ticket not found', 404);
+    if ((existing.attachments?.length ?? 0) + files.length > MAX_ATTACHMENTS) tooMany(existing);
+
+    const doc = await storeAttachments(ticketNumber, {}, files, true);
+    if (!doc) tooMany((await SupportTicket.findOne({ ticketNumber }).lean<TicketRow>()) ?? existing);
+    logger.info(`Support ticket ${publicId(ticketNumber)}: ${files.length} screenshot(s) added by ${adminUsername}`);
+    return toAdminDto(doc);
+  }
 
   /** `status`: open | pending | resolved | active (open + pending, the default) | all. `search`: id, username, wallet or subject. */
   static async adminList(query: Record<string, unknown>) {

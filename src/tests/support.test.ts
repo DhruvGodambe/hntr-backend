@@ -28,7 +28,9 @@ function matches(row: any, filter: Record<string, any>): boolean {
 function applyUpdate(row: any, update: any) {
   Object.assign(row, update.$set ?? {});
   for (const k of Object.keys(update.$unset ?? {})) delete row[k];
-  for (const [k, val] of Object.entries(update.$push ?? {})) row[k] = [...(row[k] ?? []), val];
+  for (const [k, val] of Object.entries(update.$push ?? {}) as [string, any][]) {
+    row[k] = [...(row[k] ?? []), ...(val && Array.isArray(val.$each) ? val.$each : [val])];
+  }
 }
 
 const clone = (r: any) => (r ? JSON.parse(JSON.stringify(r)) : r);
@@ -99,7 +101,29 @@ vi.mock('../services/notification.service', () => ({
   },
 }));
 
-import { SupportService, SupportError } from '../services/support.service';
+const storage = vi.hoisted(() => ({ configured: true, uploads: [] as string[], deleted: [] as string[], failNext: false }));
+
+vi.mock('../services/cloudinary.service', () => ({
+  isCloudinaryConfigured: () => storage.configured,
+  uploadPrivateImage: async (_buf: Buffer, folder: string) => {
+    if (storage.failNext) {
+      storage.failNext = false;
+      throw new Error('cloudinary down');
+    }
+    const publicId = `${folder}/img${storage.uploads.length + 1}`;
+    storage.uploads.push(publicId);
+    return { publicId, format: 'png', bytes: 100, width: 10, height: 10 };
+  },
+  signedUrl: (publicId: string, format: string) => `https://signed.example/${publicId}.${format}?sig=x`,
+  deleteImage: async (publicId: string) => {
+    storage.deleted.push(publicId);
+  },
+}));
+
+import { SupportService, SupportError, sniffImageFormat } from '../services/support.service';
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+const png = (size = PNG.length) => ({ buffer: PNG, size });
 
 const valid = {
   category: 'Membership',
@@ -125,6 +149,7 @@ beforeEach(() => {
   state.usernames = { [USER]: 'hunter1' };
   state.counter = 0;
   state.notifications = [];
+  Object.assign(storage, { configured: true, uploads: [], deleted: [], failNext: false });
 });
 
 describe('SupportService — member', () => {
@@ -238,5 +263,74 @@ describe('SupportService — admin', () => {
     const byId = await SupportService.adminList({ status: 'all', search: 'HNT-1001' });
     expect(byId.items.map((t) => t.id)).toEqual(['HNT-1001']);
     expect(byId.items[0]).toMatchObject({ username: 'hunter1', walletAddress: USER, attachmentCount: 2 });
+  });
+});
+
+describe('SupportService — screenshots', () => {
+  it('detects image types from the file bytes', () => {
+    expect(sniffImageFormat(PNG)).toBe('png');
+    expect(sniffImageFormat(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe('jpg');
+    expect(sniffImageFormat(Buffer.from('GIF89a......'))).toBe('gif');
+    expect(sniffImageFormat(Buffer.from('RIFF\0\0\0\0WEBPVP8 '))).toBe('webp');
+    expect(sniffImageFormat(Buffer.from('hello, not an image'))).toBeNull();
+  });
+
+  it('stores screenshots on the member’s ticket and returns signed URLs', async () => {
+    await SupportService.createTicket(USER, valid);
+    const t = await SupportService.addMemberAttachments(USER, 'HNT-1001', [png(), png()]);
+
+    expect(storage.uploads).toEqual(['hntr/support/HNT-1001/img1', 'hntr/support/HNT-1001/img2']);
+    expect(t.attachments).toHaveLength(2);
+    expect(t.attachments[0]).toMatchObject({ url: expect.stringContaining('sig='), format: 'png', fromSupport: false });
+    expect(JSON.stringify(t)).not.toContain('"publicId"');
+    expect((await SupportService.listMine(USER))[0].attachments).toHaveLength(2);
+  });
+
+  it('refuses other wallets, resolved tickets and non-images', async () => {
+    await SupportService.createTicket(USER, valid);
+    await expectError(SupportService.addMemberAttachments(OTHER, 'HNT-1001', [png()]), 'TICKET_NOT_FOUND', 404);
+    await expectError(
+      SupportService.addMemberAttachments(USER, 'HNT-1001', [{ buffer: Buffer.from('not an image'), size: 12 }]),
+      'INVALID_FILE_TYPE',
+      400,
+    );
+    await expectError(SupportService.addMemberAttachments(USER, 'HNT-1001', [png(6 * 1024 * 1024)]), 'FILE_TOO_LARGE', 413);
+    await expectError(SupportService.addMemberAttachments(USER, 'HNT-1001', []), 'NO_FILES', 400);
+
+    state.tickets[0].status = 'resolved';
+    await expectError(SupportService.addMemberAttachments(USER, 'HNT-1001', [png()]), 'TICKET_RESOLVED', 409);
+    expect(storage.uploads).toHaveLength(0);
+  });
+
+  it('caps a ticket at 10 screenshots', async () => {
+    await SupportService.createTicket(USER, valid);
+    await SupportService.addMemberAttachments(USER, 'HNT-1001', Array.from({ length: 8 }, () => png()));
+    await expectError(SupportService.addMemberAttachments(USER, 'HNT-1001', [png(), png(), png()]), 'TOO_MANY_FILES', 409);
+    const full = await SupportService.addMemberAttachments(USER, 'HNT-1001', [png(), png()]);
+    expect(full.attachments).toHaveLength(10);
+    expect(state.tickets[0].attachments).toHaveLength(10);
+  });
+
+  it('cleans up already-uploaded files when one upload fails', async () => {
+    await SupportService.createTicket(USER, valid);
+    storage.failNext = true;
+    await expectError(SupportService.addMemberAttachments(USER, 'HNT-1001', [png(), png()]), 'UPLOAD_FAILED', 502);
+    expect(storage.deleted).toEqual(storage.uploads);
+    expect(state.tickets[0].attachments ?? []).toHaveLength(0);
+  });
+
+  it('answers 503 when storage is not configured', async () => {
+    await SupportService.createTicket(USER, valid);
+    storage.configured = false;
+    await expectError(SupportService.addMemberAttachments(USER, 'HNT-1001', [png()]), 'UPLOADS_NOT_CONFIGURED', 503);
+  });
+
+  it('support can attach screenshots, marked as from support', async () => {
+    await SupportService.createTicket(USER, valid);
+    state.tickets[0].status = 'resolved';
+    const t = await SupportService.adminAddAttachments('HNT-1001', 'alice', [png()]);
+    expect(t.attachments[0].fromSupport).toBe(true);
+    expect(t.attachmentCount).toBe(2);
+    await expectError(SupportService.adminAddAttachments('HNT-1009', 'alice', [png()]), 'TICKET_NOT_FOUND', 404);
   });
 });

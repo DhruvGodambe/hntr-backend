@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import { SupportController } from '../controllers/support.controller';
 import { requireWalletAuth } from '../middlewares/auth.middleware';
-import { supportReplyRateLimit, supportTicketRateLimit, userApiRateLimit } from '../middlewares/rateLimiter.middleware';
+import {
+  supportReplyRateLimit,
+  supportTicketRateLimit,
+  supportUploadRateLimit,
+  userApiRateLimit,
+} from '../middlewares/rateLimiter.middleware';
+import { supportScreenshots } from '../middlewares/upload.middleware';
 
 const router = Router();
 
@@ -11,5 +17,7 @@ router.use(requireWalletAuth);
 router.get('/tickets', userApiRateLimit, SupportController.listTickets);
 router.post('/tickets', supportTicketRateLimit, SupportController.createTicket);
 router.post('/tickets/:id/messages', supportReplyRateLimit, SupportController.replyToTicket);
+// multipart/form-data, images in the `files` field. Rate limit runs before the body is read.
+router.post('/tickets/:id/attachments', supportUploadRateLimit, supportScreenshots, SupportController.addAttachments);
 
 export default router;

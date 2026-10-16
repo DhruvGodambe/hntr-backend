@@ -98,3 +98,5 @@ export const voucherRevealRateLimit = rateLimit({ windowMs: 60 * 1000, max: 30, 
 export const supportTicketRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, keyPrefix: 'support-ticket' });
 /** Replies on a support ticket. */
 export const supportReplyRateLimit = rateLimit({ windowMs: 10 * 60 * 1000, max: 30, keyPrefix: 'support-reply' });
+/** Screenshot uploads on a support ticket (each request carries up to 10 files). */
+export const supportUploadRateLimit = rateLimit({ windowMs: 10 * 60 * 1000, max: 20, keyPrefix: 'support-upload' });

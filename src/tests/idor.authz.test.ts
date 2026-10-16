@@ -61,6 +61,7 @@ vi.mock('../controllers/support.controller', () => ({
     listTickets: stubOk,
     createTicket: stubOk,
     replyToTicket: stubOk,
+    addAttachments: stubOk,
   },
 }));
 
@@ -195,6 +196,7 @@ describe('VAPT IDOR / BOLA — owner-only user and network APIs', () => {
       { method: 'get', path: '/api/support/tickets' },
       { method: 'post', path: '/api/support/tickets' },
       { method: 'post', path: '/api/support/tickets/HNT-1001/messages' },
+      { method: 'post', path: '/api/support/tickets/HNT-1001/attachments' },
     ];
     for (const r of supportRoutes) {
       it(`${r.method.toUpperCase()} ${r.path} returns 401 without Authorization`, async () => {

@@ -12,6 +12,17 @@ export interface ISupportMessage {
   createdAt: Date;
 }
 
+/** A screenshot stored privately in Cloudinary. Only signed, expiring URLs ever leave the server. */
+export interface ISupportAttachment {
+  publicId: string;
+  format: string;
+  bytes: number;
+  width: number;
+  height: number;
+  fromSupport: boolean;
+  uploadedAt: Date;
+}
+
 export interface ISupportTicket extends Document {
   /** Public id is `HNT-<ticketNumber>`. */
   ticketNumber: number;
@@ -23,8 +34,9 @@ export interface ISupportTicket extends Document {
   strategy?: string;
   subject: string;
   status: SupportTicketStatus;
-  /** Screenshots the member selected. Files are not stored yet; support asks for them in a reply. */
+  /** Screenshots the member said they selected when opening the ticket (older tickets have no files). */
   attachmentCount: number;
+  attachments: ISupportAttachment[];
   messages: ISupportMessage[];
   lastMessageAt: Date;
   resolvedAt?: Date;
@@ -43,6 +55,19 @@ const SupportMessageSchema = new Schema<ISupportMessage>(
   { _id: false },
 );
 
+const SupportAttachmentSchema = new Schema<ISupportAttachment>(
+  {
+    publicId: { type: String, required: true, maxlength: 300 },
+    format: { type: String, required: true, maxlength: 10 },
+    bytes: { type: Number, required: true, min: 0 },
+    width: { type: Number, default: 0 },
+    height: { type: Number, default: 0 },
+    fromSupport: { type: Boolean, required: true },
+    uploadedAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
 const SupportTicketSchema: Schema = new Schema(
   {
     ticketNumber: { type: Number, required: true },
@@ -54,6 +79,7 @@ const SupportTicketSchema: Schema = new Schema(
     subject: { type: String, required: true, maxlength: 90 },
     status: { type: String, enum: ['open', 'pending', 'resolved'], default: 'open' },
     attachmentCount: { type: Number, default: 0, min: 0 },
+    attachments: { type: [SupportAttachmentSchema], default: [] },
     messages: { type: [SupportMessageSchema], default: [] },
     lastMessageAt: { type: Date, required: true },
     resolvedAt: { type: Date },

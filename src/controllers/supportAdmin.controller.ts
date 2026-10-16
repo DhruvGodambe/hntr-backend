@@ -44,6 +44,15 @@ export class SupportAdminController {
     }
   }
 
+  static async addAttachments(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const files = req.files as Express.Multer.File[] | undefined;
+      sendSuccess(res, await SupportService.adminAddAttachments(param(req.params.id), admin(req), files), 'Screenshots added');
+    } catch (error) {
+      handle(res, error, next);
+    }
+  }
+
   static async setStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { status } = req.body || {};

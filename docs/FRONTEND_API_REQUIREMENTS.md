@@ -21,7 +21,7 @@ This lists every page or component whose data does not yet come from the backend
 | 3.5 | Strategy activity feeds | NFT Strategy "Real-Time Activity", Pool detail "Transaction Activity" | Static "starts at launch" note | P2 | 3.1 |
 | 3.6 | Marketplace activity feed | Marketplace "Network Activity" table | Collection names with empty cells | P2 | 3.3 |
 | 3.7 | Network reward cards | Network page: NFT Strategy Rewards, OTC Desk, Liquidity Provider | Hardcoded "Coming soon" | P3 | Product |
-| 3.8 | Support desk | Support page (hidden for now) | Built on `dev`, not deployed. No admin screen | — | Deploy |
+| 3.8 | Support desk | Support page (hidden for now) | Built on `dev` incl. screenshot uploads, not deployed. No admin screen | — | Deploy + Cloudinary keys |
 | 3.9 | Small items | Various | See section | Low | — |
 
 Two frontend flags gate the pre-launch UI. Turning them on does **not** bring data in by itself; the APIs below are needed first:
@@ -291,19 +291,82 @@ Show `username` when registered, otherwise `walletShort`. Never the full wallet,
 
 ---
 
-### 3.8 Support desk — built, needs deploy
+### 3.8 Support desk — built (incl. screenshot uploads), needs deploy
 
-Built on `dev` (not yet on the Render dev server):
-- member: `GET/POST /api/support/tickets`, `POST /api/support/tickets/:id/messages`
-- admin: `GET /api/admin/support/tickets`, `GET …/:id`, `POST …/:id/messages`, `POST …/:id/status`
-- `SUPPORT_REPLY` notification
+Built on hntr-backend `dev`, not yet on the Render dev server. All routes use the standard envelope (`data`, and `errors.code` on failure).
 
-Tests: `src/tests/support.test.ts`, and the auth checks in `src/tests/idor.authz.test.ts`.
+**Member routes** (`requireWalletAuth`; a ticket always belongs to the session wallet, never a body field):
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/support/tickets` | — | `SupportTicket[]` (newest activity first, max 50) |
+| POST | `/api/support/tickets` | JSON `{ category, priority, strategy?, subject, message, attachmentCount? }` | `SupportTicket` (201) |
+| POST | `/api/support/tickets/:id/messages` | JSON `{ body }` | `SupportTicket` |
+| POST | `/api/support/tickets/:id/attachments` | **multipart/form-data**, images in field `files` | `SupportTicket` |
+
+**Admin routes** (hntr-admin, admin panel auth): `GET /api/admin/support/tickets?status=active|open|pending|resolved|all&search&page&limit`, `GET …/:id`, `POST …/:id/messages`, `POST …/:id/status` `{ status }`, `POST …/:id/attachments` (multipart, same rules; stored with `fromSupport: true`, allowed on any status). Admin DTOs also carry `walletAddress, username, attachmentCount, lastMessageAt, resolvedAt, resolvedBy` and `author` on support messages.
+
+**Ticket shape (member):**
+```json
+{
+  "id": "HNT-1001", "subject": "Upgrade not showing", "category": "Membership",
+  "priority": "Urgent", "strategy": "Bored Ape Yacht Club", "status": "open",
+  "createdAt": "2026-10-17T10:00:00Z",
+  "messages": [{ "fromSupport": false, "body": "…", "createdAt": "…" }],
+  "attachments": [{
+    "url": "https://api.cloudinary.com/v1_1/…/image/download?…&expires_at=…",
+    "format": "png", "bytes": 182044, "width": 1170, "height": 2532,
+    "fromSupport": false, "uploadedAt": "…"
+  }]
+}
+```
+- `status`: `open` = waiting on support, `pending` = support replied, `resolved` = closed (no member replies or uploads).
+- `category` must be one of: Deposits & Withdrawals, NFT Strategies, Membership, Network & Rewards, Wallet & Account, Other. `priority`: Low | Normal | Urgent.
+
+**Screenshot uploads**
+- Files are stored **private** in Cloudinary (`authenticated` assets under `hntr/support/HNT-xxxx/`). `attachments[].url` is a **signed URL that expires after ~10 minutes**: refetch the ticket list to get fresh ones, don't cache them. `url` is `null` if storage is not configured.
+- Limits: PNG, JPEG, GIF or WebP only (checked from the file bytes, not the extension); max **5 MB per file**; max **10 screenshots per ticket** in total; rate limit 20 upload requests per 10 min.
+- Flow for the Support page: create the ticket (JSON) → if files were picked, `POST /api/support/tickets/<id>/attachments` with `FormData` (`files` repeated per file) and the `Authorization: Bearer` header. **Don't set `Content-Type` yourself**; the browser adds the multipart boundary. If the upload fails, the ticket still exists; show "Ticket opened, screenshots failed to upload" and allow a retry.
+- Read-only super-login sessions can't upload (POST).
+
+Example call:
+```ts
+const form = new FormData();
+files.forEach((f) => form.append("files", f));
+const res = await fetch(`${API_BASE}/api/support/tickets/${id}/attachments`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}` },
+  body: form,
+});
+const json = await res.json(); // json.data = SupportTicket, or json.errors.code on failure
+```
+
+**Error codes** (`errors.code`):
+
+| Code | HTTP | When |
+|---|---|---|
+| `INVALID_TICKET` | 400 | id is not `HNT-<n>` |
+| `INVALID_INPUT` / `INVALID_CATEGORY` / `INVALID_PRIORITY` | 400 | bad create/reply body |
+| `TICKET_NOT_FOUND` | 404 | unknown ticket, or another wallet's ticket |
+| `TICKET_RESOLVED` | 409 | reply/upload on a resolved ticket |
+| `TICKET_FULL` | 409 | 200-message limit reached |
+| `TOO_MANY_OPEN_TICKETS` | 429 | 10 unresolved tickets already |
+| `NO_FILES` | 400 | upload with no `files` |
+| `INVALID_FILE_TYPE` | 400 | not a PNG/JPEG/GIF/WebP |
+| `FILE_TOO_LARGE` | 413 | a file over 5 MB |
+| `TOO_MANY_FILES` | 400 / 409 | more than 10 in one request (400), or the ticket would exceed 10 (409) |
+| `INVALID_UPLOAD` | 400 | malformed multipart body |
+| `UPLOAD_FAILED` | 502 | Cloudinary rejected the upload; nothing was saved, retry |
+| `UPLOADS_NOT_CONFIGURED` | 503 | Cloudinary keys not set on the server |
+
+Notification: `SUPPORT_REPLY` (link `/support?ticket=HNT-xxxx`) when support answers.
+
+Tests: `src/tests/support.test.ts` (incl. uploads, with Cloudinary mocked), and the auth checks in `src/tests/idor.authz.test.ts`.
 
 Still to do:
-- **Deploy `dev`.** The frontend Support page is hidden for now and will be switched back on after.
-- **hntr-admin** needs a Support screen (admin frontend work) for staff to read and answer tickets.
-- **Screenshot uploads:** the page lets members pick screenshots, but there is no file storage, so only `attachmentCount` is saved. Needs storage (S3, Cloudinary…) and an upload endpoint if wanted.
+- **Set `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`** (optional `CLOUDINARY_FOLDER`) on the Render service, then **deploy `dev`**. The frontend Support page is hidden for now and will be switched back on after.
+- **Frontend:** `lib/support.ts` needs an `attachments` field on `SupportTicket` and an upload call (above); the Support page should upload after create and show thumbnails from `attachments[].url`. Its "support will ask in a reply" copy can go.
+- **hntr-admin** needs a Support screen (admin frontend work) for staff to read and answer tickets and view screenshots.
 
 ---
 
@@ -349,6 +412,6 @@ Keep or remove as you see fit.
 5. **NFT inventory** (3.3), once purchase, listing and sale are recorded on rounds.
 6. **Positions** (3.4) + **strategy rewards** (3.7).
 7. **Marketplace activity** (3.6).
-8. Deploy `dev` for **Support** (3.8) whenever ready; it's independent.
+8. Set the Cloudinary keys and deploy `dev` for **Support** (3.8) whenever ready; it's independent.
 
 For each step: service tests, add the routes to `idor.authz.test.ts`, and share the final response shapes with the frontend so `lib/*.ts` hooks can be written against them.

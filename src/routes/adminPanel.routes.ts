@@ -6,6 +6,7 @@ import { SupportAdminController } from '../controllers/supportAdmin.controller';
 import { requireAdminPanelAuth, requireAdminPrivileged } from '../middlewares/adminPanelAuth.middleware';
 import { adminApiRateLimit, adminLoginRateLimit, adminRegisterRateLimit } from '../middlewares/rateLimiter.middleware';
 import { verifyTurnstile } from '../middlewares/turnstile.middleware';
+import { supportScreenshots } from '../middlewares/upload.middleware';
 
 const router = Router();
 
@@ -108,6 +109,7 @@ router.post('/priority-line/withdrawals/:id/reject', requireAdminPrivileged, Pri
 router.get('/support/tickets', SupportAdminController.listTickets);
 router.get('/support/tickets/:id', SupportAdminController.getTicket);
 router.post('/support/tickets/:id/messages', SupportAdminController.replyToTicket);
+router.post('/support/tickets/:id/attachments', supportScreenshots, SupportAdminController.addAttachments);
 router.post('/support/tickets/:id/status', SupportAdminController.setStatus);
 
 export default router;

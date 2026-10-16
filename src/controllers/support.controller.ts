@@ -39,4 +39,13 @@ export class SupportController {
       handle(res, error, next);
     }
   }
+
+  static async addAttachments(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const files = req.files as Express.Multer.File[] | undefined;
+      sendSuccess(res, await SupportService.addMemberAttachments(req.walletAddress!, param(req.params.id), files), 'Screenshots added');
+    } catch (error) {
+      handle(res, error, next);
+    }
+  }
 }

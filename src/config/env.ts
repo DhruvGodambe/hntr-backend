@@ -102,6 +102,14 @@ export const ENV = {
   // Get it from Cloudflare dashboard -> Turnstile -> your widget -> Secret Key.
   TURNSTILE_SECRET: readEnv('TURNSTILE_SECRET'),
 
+  // Cloudinary storage for support-ticket screenshots (stored as private "authenticated"
+  // assets, served through short-lived signed URLs). When any of the three is empty,
+  // uploads answer 503 UPLOADS_NOT_CONFIGURED and the rest of support keeps working.
+  CLOUDINARY_CLOUD_NAME: readEnv('CLOUDINARY_CLOUD_NAME'),
+  CLOUDINARY_API_KEY: readEnv('CLOUDINARY_API_KEY'),
+  CLOUDINARY_API_SECRET: readEnv('CLOUDINARY_API_SECRET'),
+  CLOUDINARY_FOLDER: readEnv('CLOUDINARY_FOLDER', 'hntr/support'),
+
   // Gift-code crypto + redeem links. REQUIRED for issue/reveal/redeem URL building.
   // Pepper: any long random string. Enc key: 32-byte key as hex (64 chars) or base64.
 };
