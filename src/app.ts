@@ -15,6 +15,7 @@ import marketRoutes from './routes/market.routes';
 import poolsRoutes from './routes/pools.routes';
 import turnstileRoutes from './routes/turnstile.routes';
 import activityRoutes from './routes/activity.routes';
+import supportRoutes from './routes/support.routes';
 
 export function createApp(): Express {
   const app = express();
@@ -33,6 +34,7 @@ export function createApp(): Express {
   app.use('/api/pools', poolsRoutes);
   app.use('/api/turnstile', turnstileRoutes);
   app.use('/api/activity', activityRoutes);
+  app.use('/api/support', supportRoutes);
   app.use('/api/admin', adminPanelRoutes);
   app.use('/api/admin', adminRoutes);
 

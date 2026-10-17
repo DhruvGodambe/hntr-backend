@@ -51,6 +51,12 @@ export interface LegBreakdown {
   weakest: LegProgress; // every other leg combined, capped at 20% of the next rank's goal
 }
 
+/** Public fields of one downline member (GET /api/network/:username/downline). */
+export type DownlineMember = Pick<
+  IUser,
+  'username' | 'walletAddress' | 'sponsorUsername' | 'tier' | 'rank' | 'country' | 'joinedAt'
+>;
+
 export interface NetworkTreeNode {
   username: string;
   walletAddress: string;
@@ -128,12 +134,16 @@ export class NetworkService {
   }
 
   /**
-   * getDownline instantly fetches the user's entire downline tree.
+   * getDownline instantly fetches the user's entire downline (flat list).
+   * Returned to the upline member's browser, so only public network fields are
+   * selected: never email, phone, full name, or internal volume/override data.
    */
-  static async getDownline(username: string): Promise<IUser[]> {
+  static async getDownline(username: string): Promise<DownlineMember[]> {
     // Anyone who has this username in their ancestors array is in the downline.
-    const downlines = await User.find({ ancestors: username });
-    return downlines;
+    return User.find({ ancestors: username })
+      .select('-_id username walletAddress sponsorUsername tier rank country joinedAt')
+      .sort({ joinedAt: -1 })
+      .lean<DownlineMember[]>();
   }
 
   /**

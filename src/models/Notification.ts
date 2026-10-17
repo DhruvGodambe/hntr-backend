@@ -15,6 +15,7 @@ export type NotificationType =
   | 'PRIORITY_LINE_DEPOSIT'
   | 'PRIORITY_LINE_WITHDRAWAL_REQUESTED'
   | 'PRIORITY_LINE_WITHDRAWN'
+  | 'SUPPORT_REPLY'
   | 'GENERAL';
 
 export interface INotification extends Document {
@@ -59,6 +60,7 @@ const NotificationSchema: Schema = new Schema({
       'PRIORITY_LINE_DEPOSIT',
       'PRIORITY_LINE_WITHDRAWAL_REQUESTED',
       'PRIORITY_LINE_WITHDRAWN',
+      'SUPPORT_REPLY',
       'GENERAL',
     ],
     required: true,

@@ -2,9 +2,11 @@ import { Router } from 'express';
 import { AdminPanelController } from '../controllers/adminPanel.controller';
 import { VoucherAdminController } from '../controllers/voucherAdmin.controller';
 import { PriorityLineAdminController } from '../controllers/priorityLineAdmin.controller';
+import { SupportAdminController } from '../controllers/supportAdmin.controller';
 import { requireAdminPanelAuth, requireAdminPrivileged } from '../middlewares/adminPanelAuth.middleware';
 import { adminApiRateLimit, adminLoginRateLimit, adminRegisterRateLimit } from '../middlewares/rateLimiter.middleware';
 import { verifyTurnstile } from '../middlewares/turnstile.middleware';
+import { supportScreenshots } from '../middlewares/upload.middleware';
 
 const router = Router();
 
@@ -102,5 +104,12 @@ router.get('/priority-line/members', PriorityLineAdminController.listMembers);
 router.get('/priority-line/withdrawals', PriorityLineAdminController.listWithdrawals);
 router.post('/priority-line/withdrawals/:id/complete', requireAdminPrivileged, PriorityLineAdminController.completeWithdrawal);
 router.post('/priority-line/withdrawals/:id/reject', requireAdminPrivileged, PriorityLineAdminController.rejectWithdrawal);
+
+// Support desk — tickets opened from the member Support page
+router.get('/support/tickets', SupportAdminController.listTickets);
+router.get('/support/tickets/:id', SupportAdminController.getTicket);
+router.post('/support/tickets/:id/messages', SupportAdminController.replyToTicket);
+router.post('/support/tickets/:id/attachments', supportScreenshots, SupportAdminController.addAttachments);
+router.post('/support/tickets/:id/status', SupportAdminController.setStatus);
 
 export default router;
